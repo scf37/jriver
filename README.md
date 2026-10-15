@@ -24,8 +24,8 @@ target/dist/jriver/river help
 The distribution is self-contained (no Java needed on the target machine, same OS/arch as the build):
 
 ```
-river       launcher script (a shell script on purpose: the launchers java/jlink generate are buggy)
-bin/ lib/   minimal Java runtime made by jlink, lib/river.jar is the application
+river       launcher script (a shell script on purpose: the launchers java/jlink generate are buggy), runs bin/java -m io.github.scf37.river
+bin/ lib/   minimal Java runtime made by jlink; the application is the module io.github.scf37.river inside lib/modules
 drivers/    drivers/<name>, found next to the launcher
 ```
 

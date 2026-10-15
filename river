@@ -1,9 +1,10 @@
 #!/bin/sh
-# Launcher for jriver. Runs lib/river.jar on the bundled jlink runtime in bin/java.
-# Drivers live in drivers/ next to this script. JAVA_OPTS is honoured.
+# Launcher for jriver, the entry point of the jlink distribution (river, bin/, lib/, drivers/).
+# Starts the jriver module on the bundled runtime. Drivers live in drivers/ next to this script. JAVA_OPTS is honoured.
 dir=$(cd "$(dirname "$0")" && pwd)
 case "${LC_ALL:-${LC_CTYPE:-$LANG}}" in
   *UTF-8*|*utf8*|*UTF8*|*utf-8*) ;;
   *) if locale -a 2>/dev/null | grep -qi '^C\.utf-\?8$'; then export LC_ALL=C.UTF-8; fi ;;
 esac
-exec "$dir/bin/java" -XX:+UseParallelGC -XX:MaxRAMPercentage=75 -Driver.home="$dir" $JAVA_OPTS -jar "$dir/lib/river.jar" "$@"
+exec "$dir/bin/java" -XX:+UseParallelGC -XX:MaxRAMPercentage=75 -Driver.home="$dir" $JAVA_OPTS \
+  -m io.github.scf37.river/io.github.scf37.river.Main "$@"

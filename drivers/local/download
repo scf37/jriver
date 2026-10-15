@@ -1,0 +1,5 @@
+#!/bin/sh
+# download <dir> <relative file>: <dir>/<file> -> stdout
+set -eu
+[ $# = 2 ] || { echo "usage: download <dir> <file> (data on stdout)" >&2; exit 2; }
+exec cat "$1/$2"

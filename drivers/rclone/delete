@@ -1,0 +1,12 @@
+#!/bin/sh
+# delete <remote:path> <relative file or directory>: recursive, missing is fine
+set -eu
+[ $# = 2 ] || { echo "usage: delete <remote:path> <file>" >&2; exit 2; }
+case "$2" in
+  ""|"."|".."|/*|../*|*/..|*/../*) echo "refusing to delete '$2'" >&2; exit 2 ;;
+esac
+p="$1/$2"
+rclone deletefile "$p" 2>/dev/null && exit 0
+rclone purge "$p" 2>/dev/null && exit 0
+if rclone lsf "$p" >/dev/null 2>&1; then echo "cannot delete $p" >&2; exit 1; fi
+exit 0

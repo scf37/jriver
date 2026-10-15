@@ -1,0 +1,8 @@
+#!/bin/sh
+# delete <dir> <relative file or directory>: recursive, missing is fine
+set -eu
+[ $# = 2 ] || { echo "usage: delete <dir> <file>" >&2; exit 2; }
+case "$2" in
+  ""|"."|".."|/*|../*|*/..|*/../*) echo "refusing to delete '$2'" >&2; exit 2 ;;
+esac
+rm -rf "$1/$2"

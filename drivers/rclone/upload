@@ -1,0 +1,5 @@
+#!/bin/sh
+# upload <remote:path> <relative file>: stdin -> file (needs rclone)
+set -eu
+[ $# = 2 ] || { echo "usage: upload <remote:path> <file> (data on stdin)" >&2; exit 2; }
+exec rclone rcat "$1/$2"

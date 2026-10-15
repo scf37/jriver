@@ -17,11 +17,19 @@ JDK 25 and Maven 3.9+. jpaq is not on Maven Central yet, so install it first:
 ```
 git clone https://github.com/scf37/jpaq && (cd jpaq && mvn install -DskipTests)
 mvn package          # runs the tests, builds target/river.jar
-./river help
+./dist.sh            # jlink distribution in target/dist/jriver
+target/dist/jriver/river help
 ```
 
-`river` is a small launcher; `river.jar` is found next to it (or in `target/`), and **drivers are the directories
-`drivers/<name>` next to the launcher**.
+The distribution is self-contained (no Java needed on the target machine, same OS/arch as the build):
+
+```
+river       launcher script (a shell script on purpose: the launchers java/jlink generate are buggy)
+bin/ lib/   minimal Java runtime made by jlink, lib/river.jar is the application
+drivers/    drivers/<name>, found next to the launcher
+```
+
+Copy or unpack the directory anywhere; `river` finds everything relative to itself.
 
 ## Quickstart
 
@@ -112,13 +120,6 @@ A non-zero exit code is a failure; stderr goes to the user. Only `river.conf` an
 `me@host:/data`. Included: `local` (a directory), `ssh` (`SSH_OPTS` for options), `s3` (aws cli; `s3://bucket/prefix`),
 `rclone` (`remote:path`). The `ssh`, `s3` and `rclone` scripts are thin and untested against real servers here; the
 test suite runs on `local`.
-
-## Docker
-
-```
-docker build -t river .
-docker run --rm -e river_key=hello -v /:/host:ro -v ~/.ssh:/root/.ssh river backup ssh:me@host:/backups/box
-```
 
 ## Tests
 

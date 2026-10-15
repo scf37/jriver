@@ -1,0 +1,10 @@
+#!/bin/sh
+# upload <dir> <relative file>: stdin -> <dir>/<file>, visible only when complete
+set -eu
+[ $# = 2 ] || { echo "usage: upload <dir> <file> (data on stdin)" >&2; exit 2; }
+f="$1/$2"
+mkdir -p "$(dirname "$f")"
+tmp="$f.tmp.$$"
+trap 'rm -f "$tmp"' EXIT
+cat > "$tmp"
+mv "$tmp" "$f"

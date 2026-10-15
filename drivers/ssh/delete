@@ -1,0 +1,11 @@
+#!/bin/sh
+# delete <user@host:/dir> <relative file or directory>: recursive, missing is fine
+set -eu
+[ $# = 2 ] || { echo "usage: delete <user@host:/dir> <file>" >&2; exit 2; }
+case "$2" in
+  ""|"."|".."|/*|../*|*/..|*/../*) echo "refusing to delete '$2'" >&2; exit 2 ;;
+esac
+host=${1%%:*}; dir=${1#*:}
+q() { printf "'%s'" "$(printf %s "$1" | sed "s/'/'\\\\''/g")"; }
+# shellcheck disable=SC2086
+exec ssh $SSH_OPTS "$host" "rm -rf $(q "$dir/$2")"

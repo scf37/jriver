@@ -1,0 +1,10 @@
+#!/bin/sh
+# upload <user@host:/dir> <relative file>: stdin -> remote file, visible only when complete.
+# ssh options (key, port, ...) via SSH_OPTS.
+set -eu
+[ $# = 2 ] || { echo "usage: upload <user@host:/dir> <file> (data on stdin)" >&2; exit 2; }
+host=${1%%:*}; dir=${1#*:}
+q() { printf "'%s'" "$(printf %s "$1" | sed "s/'/'\\\\''/g")"; }
+f="$dir/$2"
+# shellcheck disable=SC2086
+exec ssh $SSH_OPTS "$host" "mkdir -p $(q "$(dirname "$f")") && cat > $(q "$f.tmp") && mv $(q "$f.tmp") $(q "$f")"

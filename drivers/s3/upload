@@ -1,0 +1,5 @@
+#!/bin/sh
+# upload <s3://bucket/prefix> <relative file>: stdin -> object (needs the aws cli)
+set -eu
+[ $# = 2 ] || { echo "usage: upload <s3://bucket/prefix> <file> (data on stdin)" >&2; exit 2; }
+exec aws s3 cp --only-show-errors - "$1/$2"

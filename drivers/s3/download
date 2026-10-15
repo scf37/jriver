@@ -1,0 +1,5 @@
+#!/bin/sh
+# download <s3://bucket/prefix> <relative file>: object -> stdout
+set -eu
+[ $# = 2 ] || { echo "usage: download <s3://bucket/prefix> <file> (data on stdout)" >&2; exit 2; }
+exec aws s3 cp --only-show-errors "$1/$2" -

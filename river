@@ -1,0 +1,16 @@
+#!/bin/sh
+# Launcher for jriver. Finds river.jar next to this script (or in target/) and runs it.
+# Drivers live in drivers/ next to this script. JAVA_HOME / JAVA_OPTS are honoured.
+dir=$(cd "$(dirname "$0")" && pwd)
+jar=$(ls "$dir"/river.jar "$dir"/target/river.jar 2>/dev/null | head -n 1)
+if [ -z "$jar" ]; then
+  echo "river: cannot find river.jar" >&2
+  exit 2
+fi
+java=java
+[ -n "$JAVA_HOME" ] && java="$JAVA_HOME/bin/java"
+case "${LC_ALL:-${LC_CTYPE:-$LANG}}" in
+  *UTF-8*|*utf8*|*UTF8*|*utf-8*) ;;
+  *) if locale -a 2>/dev/null | grep -qi '^C\.utf-\?8$'; then export LC_ALL=C.UTF-8; fi ;;
+esac
+exec "$java" -XX:+UseParallelGC -XX:MaxRAMPercentage=75 -Driver.home="$dir" $JAVA_OPTS -jar "$jar" "$@"

@@ -1,0 +1,8 @@
+#!/bin/sh
+# download <user@host:/dir> <relative file>: remote file -> stdout. ssh options via SSH_OPTS.
+set -eu
+[ $# = 2 ] || { echo "usage: download <user@host:/dir> <file> (data on stdout)" >&2; exit 2; }
+host=${1%%:*}; dir=${1#*:}
+q() { printf "'%s'" "$(printf %s "$1" | sed "s/'/'\\\\''/g")"; }
+# shellcheck disable=SC2086
+exec ssh $SSH_OPTS "$host" "cat $(q "$dir/$2")"

@@ -1,0 +1,9 @@
+#!/bin/sh
+# delete <s3://bucket/prefix> <relative file or directory>: recursive, missing is fine
+set -eu
+[ $# = 2 ] || { echo "usage: delete <s3://bucket/prefix> <file>" >&2; exit 2; }
+case "$2" in
+  ""|"."|".."|/*|../*|*/..|*/../*) echo "refusing to delete '$2'" >&2; exit 2 ;;
+esac
+aws s3 rm --only-show-errors "$1/$2"
+aws s3 rm --only-show-errors --recursive "$1/$2/"

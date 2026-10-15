@@ -1,0 +1,5 @@
+#!/bin/sh
+# download <remote:path> <relative file>: file -> stdout
+set -eu
+[ $# = 2 ] || { echo "usage: download <remote:path> <file> (data on stdout)" >&2; exit 2; }
+exec rclone cat "$1/$2"

@@ -1,0 +1,32 @@
+# river backup configuration
+#
+# Create a backup with this file:  river create <url> <this file>
+# Change it later:                 river config <url> <this file>
+# <url> is <driver>:<driver specific path>, e.g. ssh:user@host:/backups/mybox or s3://bucket/mybox
+# (drivers are the directories under drivers/ next to the river executable)
+
+# Directories and files to back up. Every 'river backup' makes a new version of exactly these.
+# Example: ["/etc", "/home/me"]
+paths: []
+
+# Files to leave out (zpaq -not patterns).
+# Example: ["*.tmp", "*/node_modules/*"]
+exclude: []
+
+# If not empty, back up only matching files (zpaq -only patterns).
+# Example: ["*.jpg"]
+include_only: []
+
+# Compression method, zpaq -method: 0 (store), 1 (fast), 2, 3, 4, 5 (best, slow)
+method: 1
+
+# How many incremental versions to add to a full backup before starting a new full backup.
+# One full backup (generation) then holds this many + 1 versions.
+keep_incremental_backup_count: 30
+
+# How many full backups (generations) to keep; the oldest is deleted when a new one is started
+keep_full_backup_count: 3
+
+# Encrypt (AES) names and data. The key is passed via the river_key environment variable
+# (or river_key_file: path of a file holding it). Without the key the backup cannot be restored.
+encrypted: false

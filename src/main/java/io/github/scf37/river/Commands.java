@@ -1,12 +1,10 @@
 package io.github.scf37.river;
 
-import io.github.scf37.jpaq.api.Command;
-import io.github.scf37.jpaq.api.ErrorLine;
-import io.github.scf37.jpaq.api.Format;
-import io.github.scf37.jpaq.api.InfoLine;
-import io.github.scf37.jpaq.api.Line;
-import io.github.scf37.jpaq.api.Options;
-import io.github.scf37.jpaq.cli.Zpaq;
+import io.github.scf37.jpaq.ArchiveContents;
+import io.github.scf37.jpaq.Event;
+import io.github.scf37.jpaq.ZpaqArchive;
+import io.github.scf37.jpaq.ZpaqArchive.Format;
+import io.github.scf37.jpaq.ZpaqArchive.Option;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintStream;
@@ -82,33 +80,63 @@ final class Commands {
       throw new RiverException("river_key is set but the backup is not encrypted (encrypted: false in config)");
   }
 
-  private Options options(Conf c) {
-    Options o = new Options().method(c.method);
-    if (!c.exclude.isEmpty()) o.not(c.exclude.toArray(String[]::new));
-    if (!c.includeOnly.isEmpty()) o.only(c.includeOnly.toArray(String[]::new));
-    return o;
+  /** True if a zpaq pattern matches the name: equal, or a directory the name is in; * and ? are wildcards. */
+  static boolean ispath(String pattern, String name) {
+    return ispath(pattern, 0, name, 0);
   }
 
-  private Options withKey(Options o, Conf c) {
-    return c.encrypted ? o.key(key()) : o;
+  private static boolean ispath(String a, int ai, String b, int bi) {
+    for (; ai < a.length(); ++ai, ++bi) {
+      char ca = a.charAt(ai);
+      if (ca == '*') {
+        while (true) {
+          if (ispath(a, ai + 1, b, bi)) return true;
+          if (bi >= b.length()) return false;
+          ++bi;
+        }
+      }
+      if (bi >= b.length()) return false;
+      char cb = b.charAt(bi);
+      if (ca == '/' && cb == '/' && ai == a.length() - 1) return true;
+      if (ca != '?' && ca != cb) return false;
+    }
+    return bi >= b.length() || b.charAt(bi) == '/';
+  }
+
+  private static boolean anyPath(List<String> patterns, String name) {
+    for (String p : patterns) if (ispath(p, name)) return true;
+    return false;
   }
 
   private static String now() {
     return Instant.now().truncatedTo(ChronoUnit.SECONDS).toString();
   }
 
-  /** Runs a jpaq command, shows its output; returns its exit code (0, 1 = warnings). */
-  private int zpaq(DriverStorage storage, Command cmd, Consumer<Line> extra) {
-    Consumer<Line> sink = l -> {
+  /** An operation on the archive. */
+  private interface Op<T> {
+    T run(ZpaqArchive archive) throws IOException;
+  }
+
+  /** Runs an operation on an archive in storage, shows what it reports. */
+  private <T> T zpaq(DriverStorage storage, String archive, Conf c, Consumer<Event> extra, Op<T> op) {
+    Consumer<Event> listener = e -> {
       // problems are always shown; a date moved to keep versions in order is only information
-      if (l instanceof ErrorLine && !(l instanceof ErrorLine.DateAdjusted)) err.print(l.text());
-      else if (verbose) err.print(l.text());
-      if (extra != null) extra.accept(l);
+      String text = Events.text(e);
+      if (text != null && (verbose || e instanceof Event.Problem && !(e instanceof Event.DateAdjusted)))
+        err.println(text);
+      if (extra != null) extra.accept(e);
     };
-    int rc = Zpaq.run(storage, Path.of("").toAbsolutePath(), cmd, sink);
+    ZpaqArchive a = ZpaqArchive.of(storage, archive, Format.SEQUENTIAL,
+        Option.key(c.encrypted ? key() : null), Option.listener(listener));
+    T r;
+    try {
+      r = op.run(a);
+    } catch (IOException | RuntimeException e) {
+      if (storage.poisoned() != null) throw new RiverException(storage.poisoned(), e);
+      throw new RiverException("archiver failed: " + e.getMessage(), e);
+    }
     if (storage.poisoned() != null) throw new RiverException(storage.poisoned());
-    if (rc >= 2) throw new RiverException("archiver failed (exit code " + rc + ")");
-    return rc;
+    return r;
   }
 
   private static String readAll(String file, InputStream stdin) {
@@ -204,28 +232,29 @@ final class Commands {
       boolean fresh = last == null || last.versions.size() > conf.keepIncrementalBackupCount;
       Conf.Generation gen = fresh ? new Conf.Generation("g" + GEN_NAME.format(Instant.now())) : last;
       String indexOut = gen.name + "/idx-" + System.currentTimeMillis() + "-"
-          + HexFormat.of().toHexDigits((short) ThreadLocalRandom.current().nextInt(65536));
-      indexOut += ".jpaq";
+          + HexFormat.of().toHexDigits((short) ThreadLocalRandom.current().nextInt(65536)) + ".jpaq";
 
-      Command.Add add = new Command.Add(gen.name + "/" + TOME_PATTERN, conf.paths,
-          withKey(options(conf), conf), Format.SEQUENTIAL, gen.index, indexOut);
-      boolean[] indexWritten = {false};
       DriverStorage storage = new DriverStorage(driver, lock);
-      int rc;
+      ZpaqArchive.AddResult added;
       try {
-        rc = zpaq(storage, add, l -> {
+        added = zpaq(storage, gen.name + "/" + TOME_PATTERN, conf, e -> {
           // the index must be the one river.conf says: otherwise jpaq would number the new tome wrongly
-          if (l instanceof InfoLine.ArchiveRead r && gen.index != null && r.versions() != gen.versions.size())
+          if (e instanceof Event.ArchiveRead r && gen.index != null && r.versions() != gen.versions.size())
             storage.poison("index " + gen.index + " has " + r.versions() + " versions but river.conf says "
                 + gen.versions.size() + "; refusing to write");
-          // an update with changes writes a tome and the index; an empty one writes nothing
-          if (l instanceof InfoLine.AddResult r && r.addedBytes() > 0) indexWritten[0] = true;
-        });
+        }, a -> a.add(b -> b.files(conf.paths)
+            .prune(n -> anyPath(conf.exclude, n))
+            .accept(n -> (conf.includeOnly.isEmpty() || anyPath(conf.includeOnly, n)) && !anyPath(conf.exclude, n))
+            .method(conf.method)
+            .index(gen.index)
+            .indexOut(indexOut)));
       } catch (RuntimeException e) {
         if (fresh) quietDelete(driver, gen.name);
         throw e;
       }
-      if (!indexWritten[0]) {
+      int rc = added.unreadable() > 0 ? 1 : 0;
+      // an update with changes writes a tome and the index; an empty one writes nothing
+      if (added.addedBytes() == 0) {
         if (verbose) err.println("nothing changed, no new version");
         if (fresh) quietDelete(driver, gen.name);
         return rc;
@@ -276,13 +305,9 @@ final class Commands {
     }
     checkKey(conf.encrypted);
     Selected s = select(conf, filesVersion);
-    Options o = withKey(new Options().until(Integer.toString(s.version.n())), conf);
-    List<String> names = new ArrayList<>();
-    zpaq(new DriverStorage(remote.driver, Guard.NONE),
-        new Command.ListArchive(s.gen.name + "/" + TOME_PATTERN, List.of(), o, s.gen.index), l -> {
-          if (l instanceof InfoLine.ListEntry e && !e.name().endsWith("/")) names.add(e.name());
-        });
-    names.forEach(out::println);
+    ArchiveContents contents = zpaq(new DriverStorage(remote.driver, Guard.NONE), s.gen.name + "/" + TOME_PATTERN,
+        conf, null, a -> a.read(r -> r.index(s.gen.index).version(s.version.n())));
+    for (ArchiveContents.Entry e : contents.entries()) if (!e.isDirectory()) out.println(e.name());
     return 0;
   }
 
@@ -291,10 +316,22 @@ final class Commands {
     Conf conf = remote.readConf();
     checkKey(conf.encrypted);
     Selected s = select(conf, version);
-    Options o = withKey(new Options().until(Integer.toString(s.version.n())).force(true), conf);
-    return zpaq(new DriverStorage(remote.driver, Guard.NONE),
-        new Command.Extract(s.gen.name + "/" + TOME_PATTERN, files,
-            to == null || verify ? List.of() : targets(to, files), o, s.gen.index, verify), null);
+    List<String> targets = to == null || verify ? List.of() : targets(to, files);
+    ZpaqArchive.ExtractResult r = zpaq(new DriverStorage(remote.driver, Guard.NONE),
+        s.gen.name + "/" + TOME_PATTERN, conf, null, a -> a.extract(x -> {
+          x.index(s.gen.index).version(s.version.n()).overwrite(true).test(verify);
+          if (!files.isEmpty()) x.select(n -> anyPath(files, n));
+          if (files.isEmpty() && !targets.isEmpty()) x.under(targets.get(0));
+          else if (!targets.isEmpty()) x.output(n -> rename(n, files, targets));
+        }));
+    return r.ok() ? 0 : 1;
+  }
+
+  /** The name with the first of {@code files} that is a prefix of it replaced by its target. */
+  private static String rename(String name, List<String> files, List<String> targets) {
+    for (int i = 0; i < files.size(); i++)
+      if (name.startsWith(files.get(i))) return targets.get(i) + name.substring(files.get(i).length());
+    return name;
   }
 
   /**

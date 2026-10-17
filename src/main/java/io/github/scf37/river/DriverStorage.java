@@ -1,6 +1,6 @@
 package io.github.scf37.river;
 
-import io.github.scf37.jpaq.api.Storage;
+import io.github.scf37.jpaq.Storage;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;

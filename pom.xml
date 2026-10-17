@@ -19,7 +19,7 @@
   <dependencies>
     <dependency>
       <groupId>io.github.scf37.jpaq</groupId>
-      <artifactId>jpaq-cli</artifactId>
+      <artifactId>jpaq-api</artifactId>
       <version>${jpaq.version}</version>
     </dependency>
     <dependency>

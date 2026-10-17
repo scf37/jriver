@@ -1,0 +1,47 @@
+# Builds the linux-x64 jlink distribution and publishes it as a GitHub release when a v* tag is pushed.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  # jpaq is not on Maven Central: built from this commit
+  JPAQ_REF: ef34a2afda7527f7cab8c44c94329ef631bba7b2
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: scf37/jpaq
+          ref: ${{ env.JPAQ_REF }}
+          path: jpaq
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+      - name: jpaq
+        run: mvn -B -q -f jpaq/pom.xml install -DskipTests
+      - name: version matches tag
+        run: |
+          v=$(sed -n 's:^  <version>\(.*\)</version>$:\1:p' pom.xml)
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "pom version $v does not match tag $GITHUB_REF_NAME" >&2; exit 1; }
+      - name: build
+        run: mvn -B package && ./dist.sh
+      - name: package
+        run: |
+          d=target/dist/jriver
+          rm -rf "$d/drivers/rclone"   # shipped drivers: local, ssh, s3
+          "$d/river" help > /dev/null
+          tar czf "jriver-${GITHUB_REF_NAME#v}-linux-x64.tar.gz" -C target/dist jriver
+      - name: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" jriver-*-linux-x64.tar.gz --title "$GITHUB_REF_NAME" --generate-notes

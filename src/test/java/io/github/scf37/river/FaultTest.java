@@ -1,6 +1,7 @@
 package io.github.scf37.river;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -93,21 +94,64 @@ class FaultTest {
     }
   }
 
+  /** What is left in the trash was deleted after the last commit; the next commit drops it. */
+  private void assertTrashIsDeleted() throws IOException {
+    for (String t : f.conf().trash) assertFalse(Files.exists(f.remote.resolve(t)), t);
+  }
+
+  /** Makes the generation full: the next backup starts a new one. */
+  private void fillGeneration() throws IOException {
+    for (int i = 2; i <= 3; i++) {
+      f.write(i + ".file", "x");
+      assertEquals(0, f.river("backup", url).rc());
+    }
+  }
+
   @Test
-  void failedBackupOfAFreshGenerationLeavesNoDirectory() throws IOException {
-    f.write("2.file", "2");
+  void failedCommitOfAFreshGenerationLeavesItInTheTrash() throws IOException {
+    fillGeneration();
+    long before = entries(f.remote);
+    f.write("4.file", "4");
+    f.failWhen("upload:river.conf", 1);  // the generation is registered in the trash, the commit fails
+    assertNotEquals(0, f.river("backup", url).rc());
+    f.failNever();
+    assertEquals(3, versions().size());
+    assertEquals(before + 1, entries(f.remote), "the uploaded generation is still there");
+    String orphan = f.conf().trash.get(0);
+    assertTrue(Files.isDirectory(f.remote.resolve(orphan)), orphan);
     assertEquals(0, f.river("backup", url).rc());
-    f.write("3.file", "3");
-    assertEquals(0, f.river("backup", url).rc());  // generation now has 3 versions: next one rolls
+    assertFalse(Files.exists(f.remote.resolve(orphan)), "the next run deletes it");
+    assertEquals(4, versions().size());
+    assertTrashIsDeleted();
+  }
+
+  @Test
+  void freshGenerationOfARunThatDiesIsDeletedByTheNextRun() throws IOException {
+    fillGeneration();
+    f.write("4.file", "4");
+    // the index upload fails and so does the cleanup: as if the run was killed after uploading its tome
+    f.failWhen("upload:*/idx-* delete:*");
+    assertNotEquals(0, f.river("backup", url).rc());
+    f.failNever();
+    List<String> trash = f.conf().trash.stream().filter(t -> !t.contains("/")).toList();  // also the old index
+    assertEquals(1, trash.size(), trash.toString());
+    assertTrue(Files.exists(f.remote.resolve(trash.get(0)).resolve("arc-000001.jpaq")));
+    f.write("5.file", "5");
+    assertEquals(0, f.river("backup", url).rc());
+    assertFalse(Files.exists(f.remote.resolve(trash.get(0))));
+    assertTrashIsDeleted();
+    assertEquals(List.of("1.file", "2.file", "3.file", "4.file", "5.file"), restoredLatest());
+  }
+
+  @Test
+  void freshGenerationIsNotStartedWithoutRegisteringItFirst() throws IOException {
+    fillGeneration();
     long before = entries(f.remote);
     f.write("4.file", "4");
     f.failWhen("upload:river.conf");
     assertNotEquals(0, f.river("backup", url).rc());
     f.failNever();
-    assertEquals(3, versions().size());
-    assertTrue(entries(f.remote) == before + 1, "failed commit leaves its generation as an orphan until it fails earlier");
-    f.failWhen("upload:*/arc-*");
-    assertNotEquals(0, f.river("backup", url).rc());
+    assertEquals(before, entries(f.remote), "nothing uploaded");
   }
 
   @Test
@@ -125,16 +169,75 @@ class FaultTest {
     assertEquals(3, versions().size());
   }
 
+  private List<Path> indexes(Path gen) throws IOException {
+    try (var s = Files.list(gen)) {
+      return s.filter(p -> p.getFileName().toString().startsWith("idx-")).toList();
+    }
+  }
+
   @Test
-  void failedOldFileCleanupIsOnlyAWarning() throws IOException {
+  void failedOldFileCleanupIsOnlyAWarningAndRetriedByTheNextRun() throws IOException {
+    Path gen = f.remote.resolve(versions().get(0).split(":")[0]);
     f.write("2.file", "2");
     f.failWhen("delete:*");
     Result r = f.river("backup", url);
     assertEquals(0, r.rc(), r.toString());
     assertTrue(r.err().contains("warning"), r.err());
     assertEquals(2, versions().size());
+    assertEquals(2, indexes(gen).size(), "old index still there");
+    assertEquals(1, f.conf().trash.size(), "and in the trash");
     f.failNever();
     assertEquals(List.of("1.file", "2.file"), restoredLatest());
+    Result again = f.river("backup", url);  // nothing changed: still empties the trash
+    assertEquals(0, again.rc(), again.toString());
+    assertEquals(List.of(Path.of(f.conf().generations.get(0).index).getFileName()),
+        indexes(gen).stream().map(Path::getFileName).toList());
+    assertEquals(List.of(), f.conf().trash);
+  }
+
+  @Test
+  void droppedGenerationThatCannotBeDeletedIsDeletedLater() throws IOException {
+    Path c = tmp.resolve("one.yaml");
+    Files.writeString(c, f.config("").replace("keep_incremental_backup_count: 2", "keep_incremental_backup_count: 0")
+        .replace("keep_full_backup_count: 3", "keep_full_backup_count: 1"));
+    assertEquals(0, f.river("config", url, c.toString()).rc());
+    String old = f.conf().generations.get(0).name;
+    f.write("2.file", "2");
+    f.failWhen("delete:*");
+    assertEquals(0, f.river("backup", url).rc());  // a new generation, the old one is dropped
+    f.failNever();
+    assertTrue(Files.isDirectory(f.remote.resolve(old)), "delete failed");
+    assertTrue(f.conf().trash.contains(old), f.conf().trash.toString());
+    assertEquals(0, f.river("backup", url).rc());  // another new generation, the second one is dropped
+    assertFalse(Files.exists(f.remote.resolve(old)));
+    assertFalse(f.conf().trash.contains(old));
+    assertTrashIsDeleted();
+    assertEquals(List.of("1.file", "2.file"), restoredLatest());
+  }
+
+  @Test
+  void trashNeverDeletesWhatIsInUse() throws IOException {
+    Conf c = f.conf();
+    String gen = c.generations.get(0).name;
+    c.trash.add(gen);
+    c.trash.add(c.generations.get(0).index);
+    Files.writeString(f.remote.resolve("river.conf"), c.dump());
+    Result r = f.river("backup", url);
+    assertEquals(0, r.rc(), r.toString());
+    assertTrue(r.err().contains("in use"), r.err());
+    assertEquals(List.of(), f.conf().trash);
+    assertEquals(List.of("1.file"), restoredLatest());
+  }
+
+  @Test
+  void deleteEmptiesTheTrash() throws IOException {
+    Path orphan = f.remote.resolve("gorphan");
+    Files.createDirectories(orphan);
+    Conf c = f.conf();
+    c.trash.add("gorphan");
+    Files.writeString(f.remote.resolve("river.conf"), c.dump());
+    assertEquals(0, f.river("delete", url, "--yes").rc());
+    assertFalse(Files.exists(orphan));
   }
 
   @Test
@@ -232,6 +335,15 @@ class FaultTest {
     assertEquals(1, versions().size(), "not committed");
     assertTrue(Files.readString(f.remote.resolve("lock")).startsWith("someone-else"), "foreign lock left alone");
     assertEquals(List.of("1.file"), restoredLatest());
+  }
+
+  @Test
+  void uploadIsNotPublishedOnceTheLockIsLost() throws IOException {
+    Path gen = f.remote.resolve(versions().get(0).split(":")[0]);
+    f.write("2.file", "2");
+    f.stealLockWhen("upload:*/arc-*");  // taken over while the tome is uploading
+    assertNotEquals(0, f.river("backup", url).rc());
+    assertFalse(Files.exists(gen.resolve("arc-000002.jpaq")), "the upload is killed, not completed");
   }
 
   @Test

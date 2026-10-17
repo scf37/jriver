@@ -223,9 +223,10 @@ final class Commands {
     Remote remote = new Remote(driver, url);
     try (LocalLock ll = LocalLock.acquire(lockDir(), url); Lock lock = Lock.acquire(remote)) {
       Conf conf = remote.readConf();
-      String fingerprint = conf.stateFingerprint();
+      String fingerprint = conf.stateFingerprint();  // of river.conf as it is now
       checkKey(conf.encrypted);
       if (conf.paths.isEmpty()) throw new RiverException("no paths to back up in config");
+      emptyTrash(driver, lock, conf);
 
       // keep_incremental_backup_count incrementals follow the first, full, version of a generation
       Conf.Generation last = conf.lastGeneration();
@@ -233,6 +234,12 @@ final class Commands {
       Conf.Generation gen = fresh ? new Conf.Generation("g" + GEN_NAME.format(Instant.now())) : last;
       String indexOut = gen.name + "/idx-" + System.currentTimeMillis() + "-"
           + HexFormat.of().toHexDigits((short) ThreadLocalRandom.current().nextInt(65536)) + ".jpaq";
+      if (fresh) {
+        // a new generation is in the trash until its first version is committed: if this run dies, a later one
+        // deletes the directory
+        conf.trash.add(gen.name);
+        fingerprint = commit(remote, lock, fingerprint, conf);
+      }
 
       DriverStorage storage = new DriverStorage(driver, lock);
       ZpaqArchive.AddResult added;
@@ -256,28 +263,31 @@ final class Commands {
       // an update with changes writes a tome and the index; an empty one writes nothing
       if (added.addedBytes() == 0) {
         if (verbose) err.println("nothing changed, no new version");
-        if (fresh) quietDelete(driver, gen.name);
+        if (fresh && quietDelete(driver, gen.name)) conf.trash.remove(gen.name);
+        if (!conf.stateFingerprint().equals(fingerprint)) {
+          try {
+            commit(remote, lock, fingerprint, conf);  // only the trash changed
+          } catch (IOException | RiverException e) {
+            err.println("warning: cannot update the trash: " + e.getMessage());
+          }
+        }
         return rc;
       }
 
-      // commit: only if we still own the lock and nobody changed the state under us
-      lock.check();
-      Conf cur = remote.readConf();
-      if (!cur.stateFingerprint().equals(fingerprint))
-        throw new RiverException("river.conf changed while the backup was running, not committing");
-      String oldIndex = gen.index;
+      // commit: what it stops referring to goes to the trash in the same write
+      if (gen.index != null) conf.trash.add(gen.index);
       gen.index = indexOut;
       gen.versions.add(new Conf.Version(gen.versions.size() + 1, now()));
-      if (fresh) conf.generations.add(gen);
-      List<String> dropped = new ArrayList<>();
-      while (conf.generations.size() > conf.keepFullBackupCount) dropped.add(conf.generations.remove(0).name);
-      remote.writeConf(conf);
+      if (fresh) {
+        conf.generations.add(gen);
+        conf.trash.remove(gen.name);
+      }
+      while (conf.generations.size() > conf.keepFullBackupCount) conf.trash.add(conf.generations.remove(0).name);
+      commit(remote, lock, fingerprint, conf);
 
-      // cleanup, best effort: leftovers are removed with their generation
+      // cleanup, best effort: what is left stays in the trash for the next run (which also drops what is deleted)
       try {
-        lock.check();
-        if (oldIndex != null) quietDelete(driver, oldIndex);
-        for (String d : dropped) quietDelete(driver, d);
+        emptyTrash(driver, lock, conf);
       } catch (IOException e) {
         err.println("warning: lock lost after commit, not deleting old files: " + e.getMessage());
       }
@@ -287,11 +297,38 @@ final class Commands {
     }
   }
 
-  private void quietDelete(Driver driver, String rel) {
+  /**
+   * Writes river.conf if we still own the lock and nobody changed the state since it had {@code fingerprint};
+   * returns the fingerprint of the state written.
+   */
+  private static String commit(Remote remote, Lock lock, String fingerprint, Conf conf) throws IOException {
+    lock.check();
+    if (!remote.readConf().stateFingerprint().equals(fingerprint))
+      throw new RiverException("river.conf changed while the backup was running, not committing");
+    remote.writeConf(conf);
+    return conf.stateFingerprint();
+  }
+
+  /** Deletes what is in the trash, best effort; drops what was deleted from {@code conf.trash} (not written). */
+  private void emptyTrash(Driver driver, Lock lock, Conf conf) throws IOException {
+    for (String t : List.copyOf(conf.trash)) {
+      if (conf.refers(t)) {
+        err.println("warning: " + t + " is in use, removed from the trash without deleting it");
+        conf.trash.remove(t);
+        continue;
+      }
+      lock.beforeWrite();
+      if (quietDelete(driver, t)) conf.trash.remove(t);
+    }
+  }
+
+  private boolean quietDelete(Driver driver, String rel) {
     try {
       driver.delete(rel);
+      return true;
     } catch (IOException e) {
       err.println("warning: " + e.getMessage());
+      return false;
     }
   }
 
@@ -356,6 +393,10 @@ final class Commands {
     Remote remote = new Remote(driver, url);
     try (LocalLock ll = LocalLock.acquire(lockDir(), url); Lock lock = Lock.acquire(remote)) {
       Conf conf = remote.readConf();
+      for (String t : conf.trash) {
+        lock.check();
+        driver.delete(t);
+      }
       for (Conf.Generation g : conf.generations) {
         lock.check();
         driver.delete(g.name);

@@ -2,10 +2,13 @@ package io.github.scf37.river;
 
 import java.io.IOException;
 
-/** Checked by the storage before it opens a blob for writing and before every write. */
+/** Checked by the storage before it opens a blob for writing, before every write and before it publishes the blob. */
 interface Guard {
-  /** Before a blob is opened (this truncates an existing one): fully checks the lock. */
-  void beforeOpen() throws IOException;
+  /**
+   * Fully checks the lock: before a blob is opened, and before it is published (closing the upload makes the
+   * driver replace an existing blob of that name).
+   */
+  void verify() throws IOException;
 
   /** Before every chunk of data: cheap local check. */
   void beforeWrite() throws IOException;
@@ -15,7 +18,7 @@ interface Guard {
 
   Guard NONE = new Guard() {
     @Override
-    public void beforeOpen() {}
+    public void verify() {}
 
     @Override
     public void beforeWrite() {}

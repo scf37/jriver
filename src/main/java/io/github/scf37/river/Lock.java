@@ -16,7 +16,8 @@ import java.util.function.LongSupplier;
  * <p>As a {@link Guard} it makes sure nothing is written when the lease cannot be trusted any
  * more: a heartbeat that finds a foreign uuid, or cannot renew in time, fails the lock and aborts
  * running uploads; every write also compares the wall clock with the validity deadline, so a
- * process that was frozen for longer than the TTL stops at its first write after waking up.
+ * process that was frozen for longer than the TTL stops at its first write after waking up. Opening
+ * and publishing a blob re-read the lock file.
  */
 final class Lock implements Guard, AutoCloseable {
   /** Timing, in seconds (milliseconds for the confirm delay); system properties exist for tests. */
@@ -133,7 +134,7 @@ final class Lock implements Guard, AutoCloseable {
 
   /** Full check against the remote lock file. */
   @Override
-  public void beforeOpen() throws IOException {
+  public void verify() throws IOException {
     check();
   }
 

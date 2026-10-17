@@ -78,7 +78,7 @@ Inside a generation unchanged data is stored once, so incremental versions are s
 ## What is stored
 
 ```
-<url>/river.conf                      config + state (generations, versions); the only file that is ever overwritten
+<url>/river.conf                      config + state (generations, versions, trash); the only file that is ever overwritten
 <url>/lock                            the lock, see below
 <url>/g<time>/arc-000001.jpaq ...     one tome per backup run
 <url>/g<time>/idx-<unix ms>-<hex>.jpaq  the index of the generation; a new name per version, old one deleted after commit
@@ -89,6 +89,13 @@ replacing `river.conf`** (it names the current index and lists the version). Any
 failed or killed run) is ignored and overwritten by the next run, so only `river.conf` must be replaced atomically
 by the driver.
 
+Drivers cannot list files, so river keeps a **trash** in `river.conf`: what a commit stops referring to (the
+previous index, generations beyond `keep_full_backup_count`) is put in the trash by that same commit, then deleted.
+A new generation is put in the trash before its first upload and taken out by its first commit, so a run that dies
+leaves nothing that a later run cannot find. Every `backup` (and `delete`) deletes what is in the trash; a failed
+delete is a warning and is retried by the next run. Entries deleted after a commit are dropped from the list at the
+next write of `river.conf`.
+
 ## Locking
 
 Concurrent backups would corrupt each other, so `backup`, `config` and `delete` take a lease lock:
@@ -98,13 +105,17 @@ Concurrent backups would corrupt each other, so `backup`, `config` and `delete` 
   the others back off). An unreadable or missing lock counts as held. Release writes expiry 0.
 - A heartbeat renews it every minute. If it finds another uuid, or cannot renew in time, the run aborts and kills the
   running upload.
-- Nothing is written without checking: before every blob is opened (opening truncates), the lock is re-read;
-  before every chunk the wall clock is compared with the lease, so a process frozen for longer than the lease stops
-  at its first write after waking up. Before the commit the lock is checked again and `river.conf` must be unchanged.
+- Nothing is written without checking: before every blob is opened, and again before it is published (ending the
+  upload is what makes a driver replace the file), the lock is re-read; before every chunk the wall clock is
+  compared with the lease, so a process frozen for longer than the lease stops at its first write after waking up.
+  An upload that fails a check is killed, with the processes the driver started, so that it is never completed.
+  Before the commit the lock is checked again and `river.conf` must be unchanged.
 - The same backup url cannot be started twice on one machine (file lock in `~/.cache/river`, `river_lock_dir` to change).
 
-Known limits: needs clocks within about 30 s of each other (NTP); a process frozen for longer than the lease while an
-upload is already in flight can still push the bytes that are already in the pipe. `river verify` detects the damage.
+Known limits: needs clocks within about 30 s of each other (NTP); a process frozen between the last check of an upload
+and its end (a few milliseconds) can still complete it after another process took over. A river process killed with
+`kill -9` closes its pipes, which drivers cannot tell from a complete upload; that matters only for files no commit
+refers to yet. `river verify` detects the damage.
 A crashed run holds the lock for at most 5 minutes (`river unlock` to skip the wait).
 
 ## Drivers
@@ -116,7 +127,10 @@ A crashed run holds the lock for at most 5 minutes (`river unlock` to skip the w
 - `delete`: delete the file or directory (recursively); a missing file is not an error
 
 A non-zero exit code is a failure; stderr goes to the user. Only `river.conf` and `lock` need atomic replacement
-(tmp file + rename, or an object store). The url `ssh:me@host:/data` calls the scripts in `drivers/ssh` with
+(tmp file + rename, or an object store). An `upload` that is killed, or fails, must not leave a complete-looking file
+behind: river kills the upload processes to abort an upload, and the driver must not publish what arrived until
+then. `ssh` follows the data with a random end marker for this (the server sees a dropped connection as the end of
+its input); `local` and `s3` publish only on success. The url `ssh:me@host:/data` calls the scripts in `drivers/ssh` with
 `me@host:/data`. Included: `local` (a directory), `ssh` (`SSH_OPTS` for options), `s3` (aws cli; `s3://bucket/prefix`),
 `rclone` (`remote:path`). The `ssh`, `s3` and `rclone` scripts are thin and untested against real servers here; the
 test suite runs on `local`.
@@ -125,4 +139,5 @@ test suite runs on `local`.
 
 `mvn test` covers rolling and retention, restoring every version, encryption, exclude/include, empty updates, lock
 races, lease expiry and takeover, and fault injection at every step of a backup (tome, index, commit, cleanup,
-downloads) checking that the last committed version always restores bit-exact.
+downloads) checking that the last committed version always restores bit-exact and that leftovers are deleted by
+later runs. The `ssh` upload is tested against a fake `ssh` that runs the remote side locally.

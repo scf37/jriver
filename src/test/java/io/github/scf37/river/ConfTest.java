@@ -31,6 +31,33 @@ class ConfTest {
   }
 
   @Test
+  void trashIsStateAndSurvivesConfigChanges() {
+    Conf c = new Conf();
+    c.generations.add(new Conf.Generation("g1"));
+    String before = c.stateFingerprint();
+    c.trash.add("g0");
+    c.trash.add("g1/idx-1-abcd.jpaq");
+    assertEquals(false, before.equals(c.stateFingerprint()));
+    Conf d = Conf.parse(c.dump());
+    assertEquals(List.of("g0", "g1/idx-1-abcd.jpaq"), d.trash);
+    Conf e = d.withConfigFrom(Conf.parseConfig("paths: ['/x']\n", "config"));
+    assertEquals(d.trash, e.trash);
+    assertEquals(List.of(), Conf.parse("paths: ['/x']\n").trash);  // river.conf written before the trash existed
+  }
+
+  @Test
+  void refersToGenerationsAndIndexesOnly() {
+    Conf c = new Conf();
+    Conf.Generation g = new Conf.Generation("g1");
+    g.index = "g1/idx-2.jpaq";
+    c.generations.add(g);
+    assertEquals(true, c.refers("g1"));
+    assertEquals(true, c.refers("g1/idx-2.jpaq"));
+    assertEquals(false, c.refers("g1/idx-1.jpaq"));
+    assertEquals(false, c.refers("g2"));
+  }
+
+  @Test
   void stateFingerprintChangesWithState() {
     Conf c = new Conf();
     String before = c.stateFingerprint();

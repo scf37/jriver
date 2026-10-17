@@ -6,5 +6,11 @@ set -eu
 host=${1%%:*}; dir=${1#*:}
 q() { printf "'%s'" "$(printf %s "$1" | sed "s/'/'\\\\''/g")"; }
 f="$dir/$2"
+# The data is followed by a random end marker. A killed upload closes the connection, and the remote side then sees
+# the end of its input like after a complete upload: it publishes the file only if the marker arrived. The marker is
+# only sent if all of stdin was read.
+end=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+n=${#end}
 # shellcheck disable=SC2086
-exec ssh $SSH_OPTS "$host" "mkdir -p $(q "$(dirname "$f")") && cat > $(q "$f.tmp") && mv $(q "$f.tmp") $(q "$f")"
+{ cat && printf %s "$end"; } | ssh ${SSH_OPTS:-} "$host" "f=$(q "$f"); t=\"\$f.tmp.\$\$\"; trap 'rm -f \"\$t\"' EXIT
+mkdir -p $(q "$(dirname "$f")") && cat > \"\$t\" && [ \"\$(tail -c $n \"\$t\")\" = $end ] && truncate -s -$n \"\$t\" && mv \"\$t\" \"\$f\""

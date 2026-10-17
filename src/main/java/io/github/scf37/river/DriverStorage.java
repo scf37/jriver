@@ -8,8 +8,9 @@ import java.io.OutputStream;
 
 /**
  * jpaq {@link Storage} on top of a {@link Driver}: everything is streamed through the driver
- * scripts. Writes are guarded: no blob is opened and no byte is sent unless the {@link Guard}
- * (the lock) says we still hold it; a lost guard kills the upload process so that it cannot finish.
+ * scripts. Writes are guarded: no blob is opened, no byte is sent and no upload is completed unless
+ * the {@link Guard} (the lock) says we still hold it; a lost guard kills the upload process so that
+ * it cannot finish (drivers publish a blob only when its upload ends well).
  */
 final class DriverStorage implements Storage {
   private final Driver driver;
@@ -85,7 +86,7 @@ final class DriverStorage implements Storage {
   @Override
   public OutputStream write(String name) throws IOException {
     if (poisoned != null) throw new IOException("not writing " + name + ": " + poisoned);
-    guard.beforeOpen();
+    guard.verify();
     Process p = driver.start("upload", name, true);
     p.getInputStream().close();
     OutputStream out = p.getOutputStream();
@@ -96,7 +97,7 @@ final class DriverStorage implements Storage {
 
       private void abort() {
         aborted = true;
-        p.destroyForcibly();
+        Driver.kill(p);
       }
 
       private void check() throws IOException {
@@ -125,8 +126,16 @@ final class DriverStorage implements Storage {
         if (closed) return;
         closed = true;
         unregister.run();
+        if (!aborted) {
+          try {
+            guard.verify();  // closing stdin publishes the blob: the last moment to back out
+          } catch (IOException e) {
+            abort();
+            throw e;
+          }
+        }
         if (aborted) {
-          p.destroyForcibly();
+          Driver.kill(p);
           throw new IOException("upload " + name + " aborted");
         }
         try {

@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
 
 /**
  * A storage driver: the directory {@code drivers/<name>} next to the river executable with three
@@ -38,12 +39,30 @@ final class Driver {
     return pb.start();
   }
 
+  /**
+   * Kills a driver script with everything it started: killing only the script would leave e.g. its {@code cat}
+   * running, which then completes the upload when it sees the end of its input. The processes that move the data
+   * go first, so that the script sees them fail and cleans up (temp files) before it exits.
+   */
+  static void kill(Process p) {
+    try {
+      for (int i = 0; i < 2 && p.isAlive(); i++) {
+        p.descendants().forEach(ProcessHandle::destroyForcibly);
+        p.waitFor(1, TimeUnit.SECONDS);
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+    p.descendants().forEach(ProcessHandle::destroyForcibly);
+    p.destroyForcibly();
+  }
+
   static void check(Process p, String what) throws IOException {
     try {
       int rc = p.waitFor();
       if (rc != 0) throw new IOException(what + " failed (exit code " + rc + ")");
     } catch (InterruptedException e) {
-      p.destroyForcibly();
+      kill(p);
       Thread.currentThread().interrupt();
       throw new IOException(what + " interrupted", e);
     }
@@ -65,7 +84,7 @@ final class Driver {
       p.getInputStream().close();
       out.write(data);
     } catch (IOException e) {
-      p.destroyForcibly();
+      kill(p);
       throw e;
     }
     check(p, "upload " + rel);

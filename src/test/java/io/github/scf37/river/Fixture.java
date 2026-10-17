@@ -49,16 +49,25 @@ final class Fixture {
     }
   }
 
-  /** A driver that behaves like local but fails while the marker file {@code <remote>.fail} holds a glob. */
+  /**
+   * A driver that behaves like local but fails the operations matching the globs in {@link #failWhen} (after
+   * skipping the first matches), and puts a foreign lock in place on those in {@link #stealLockWhen}.
+   */
   void addFlakyDriver() throws IOException {
     Path d = home.resolve("drivers/flaky");
     Files.createDirectories(d);
     Path marker = root.resolve("fail-pattern");
+    Path skip = root.resolve("fail-skip");
+    Path steal = root.resolve("steal-pattern");
     for (String op : List.of("upload", "download", "delete")) {
       Path s = d.resolve(op);
-      Path steal = root.resolve("steal-pattern");
-      Files.writeString(s, "#!/bin/sh\nset -eu\nif [ -f '" + marker + "' ]; then\n  pat=$(cat '" + marker + "')\n"
-          + "  case \"" + op + ":$2\" in $pat) echo \"flaky: injected failure\" >&2; exit 1 ;; esac\nfi\n"
+      Files.writeString(s, "#!/bin/sh\nset -euf\nif [ -f '" + marker + "' ]; then\n"
+          + "  for pat in $(cat '" + marker + "'); do\n"
+          + "    case \"" + op + ":$2\" in $pat)\n"
+          + "      n=$(cat '" + skip + "' 2>/dev/null || echo 0)\n"
+          + "      if [ \"$n\" -gt 0 ]; then echo $((n - 1)) > '" + skip + "'\n"
+          + "      else echo \"flaky: injected failure\" >&2; exit 1; fi ;;\n"
+          + "    esac\n  done\nfi\n"
           + "if [ -f '" + steal + "' ]; then\n  pat=$(cat '" + steal + "')\n"
           + "  case \"" + op + ":$2\" in $pat) echo 'someone-else 99999999999' > \"$1/lock\" ;; esac\nfi\n"
           + "exec '" + home.resolve("drivers/local/" + op) + "' \"$@\"\n");
@@ -67,13 +76,25 @@ final class Fixture {
     }
   }
 
-  void failWhen(String glob) throws IOException {
-    Files.writeString(root.resolve("fail-pattern"), glob);
+  /** Space separated globs over {@code <op>:<relative path>}. */
+  void failWhen(String globs) throws IOException {
+    failWhen(globs, 0);
+  }
+
+  /** Lets the first {@code skip} matching operations through. */
+  void failWhen(String globs, int skip) throws IOException {
+    Files.writeString(root.resolve("fail-skip"), Integer.toString(skip));
+    Files.writeString(root.resolve("fail-pattern"), globs);
   }
 
   /** The flaky driver puts a foreign lock in place when this operation happens (another process took over). */
   void stealLockWhen(String glob) throws IOException {
     Files.writeString(root.resolve("steal-pattern"), glob);
+  }
+
+  /** river.conf as stored. */
+  Conf conf() throws IOException {
+    return Conf.parse(Files.readString(remote.resolve("river.conf")));
   }
 
   void failNever() throws IOException {

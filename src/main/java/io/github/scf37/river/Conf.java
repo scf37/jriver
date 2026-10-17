@@ -11,7 +11,7 @@ import org.yaml.snakeyaml.constructor.SafeConstructor;
 
 /**
  * Contents of {@code river.conf}: the configuration (edited by the user) and the state (kept by
- * river): generations and their versions.
+ * river): generations and their versions, and the trash.
  */
 final class Conf {
   /** Version {@code n} of a generation (the n-th version in its index). */
@@ -36,6 +36,12 @@ final class Conf {
   int keepFullBackupCount = 3;
   boolean encrypted;
   final List<Generation> generations = new ArrayList<>();
+  /**
+   * Files and directories that nothing refers to any more and that are still to be deleted: written to river.conf
+   * in the same commit that stops referring to them, so that a failed or skipped delete is retried by later runs
+   * (drivers cannot list, the trash is the only way to find them).
+   */
+  final List<String> trash = new ArrayList<>();
 
   private static Yaml yaml() {
     DumperOptions o = new DumperOptions();
@@ -83,6 +89,7 @@ final class Conf {
         c.generations.add(gen);
       }
     }
+    c.trash.addAll(strings(m.get("trash"), "trash"));
     return c;
   }
 
@@ -135,6 +142,7 @@ final class Conf {
     }
     Map<String, Object> m = new LinkedHashMap<>();
     m.put("generations", gens);
+    m.put("trash", trash);
     return m;
   }
 
@@ -165,7 +173,14 @@ final class Conf {
     c.keepFullBackupCount = cfg.keepFullBackupCount;
     c.encrypted = cfg.encrypted;
     c.generations.addAll(generations);
+    c.trash.addAll(trash);
     return c;
+  }
+
+  /** True if the state refers to this file or directory (a generation or an index): it must not be deleted. */
+  boolean refers(String rel) {
+    for (Generation g : generations) if (rel.equals(g.name) || rel.equals(g.index)) return true;
+    return false;
   }
 
   Generation lastGeneration() {

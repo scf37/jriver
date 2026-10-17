@@ -8,4 +8,4 @@ esac
 host=${1%%:*}; dir=${1#*:}
 q() { printf "'%s'" "$(printf %s "$1" | sed "s/'/'\\\\''/g")"; }
 # shellcheck disable=SC2086
-exec ssh $SSH_OPTS "$host" "rm -rf $(q "$dir/$2")"
+exec ssh ${SSH_OPTS:-} "$host" "rm -rf $(q "$dir/$2")"

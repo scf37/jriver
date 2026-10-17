@@ -38,7 +38,6 @@ jobs:
       - name: package
         run: |
           d=target/dist/jriver
-          rm -rf "$d/drivers/rclone"   # shipped drivers: local, ssh, s3
           "$d/river" help > /dev/null
           tar czf "jriver-${GITHUB_REF_NAME#v}-linux-x64.tar.gz" -C target/dist jriver
       - name: release

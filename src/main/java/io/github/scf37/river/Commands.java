@@ -16,17 +16,15 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /** The river commands. Every method returns the exit code: 0 ok, 1 ok with warnings. */
 final class Commands {
   private static final DateTimeFormatter GEN_NAME =
       DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmssSSS").withZone(ZoneOffset.UTC);
-  private static final String TOME_PATTERN = "arc-??????.jpaq";
 
   private final Path home;
   private final Map<String, String> env;
@@ -45,7 +43,12 @@ final class Commands {
   // ---------------------------------------------------------------- helpers
 
   private Remote remote(Url url) {
-    return new Remote(new Driver(home, url), url);
+    return new Remote(new Driver(home, url), url, keyOrNull());
+  }
+
+  private String keyOrNull() {
+    String k = key();
+    return k.isEmpty() ? null : k;
   }
 
   private Path lockDir() {
@@ -178,10 +181,10 @@ final class Commands {
     if (conf.paths.isEmpty()) throw new RiverException("config: paths must not be empty");
     checkKey(conf.encrypted);
     Remote remote = remote(url);
-    if (remote.confExists()) throw new RiverException("backup already exists at " + url);
     try {
-      remote.writeLock(new Remote.LockEntry("none", 0));
-      remote.writeConf(conf);
+      if (remote.exists()) throw new RiverException("backup already exists at " + url);
+      conf.revision = 1;
+      remote.commit(conf);
     } catch (IOException e) {
       throw new RiverException("cannot create backup at " + url + ": " + e.getMessage(), e);
     }
@@ -191,140 +194,133 @@ final class Commands {
   int config(Url url, String confFile, InputStream stdin) {
     Remote remote = remote(url);
     if (confFile == null) {
-      out.print(remote.readConf().dumpConfig());
+      out.print(remote.latest().conf().dumpConfig());
       return 0;
     }
     Conf cfg = Conf.parseConfig(readAll(confFile, stdin), "config");
     if (cfg.paths.isEmpty()) throw new RiverException("config: paths must not be empty");
     checkKey(cfg.encrypted);
-    try (LocalLock ll = LocalLock.acquire(lockDir(), url); Lock lock = Lock.acquire(remote)) {
-      Conf cur = remote.readConf();
+    try (LocalLock ll = LocalLock.acquire(lockDir(), url)) {
+      Remote.Snapshot snap = remote.latest();
+      Conf cur = snap.conf();
       if (cur.encrypted != cfg.encrypted && !cur.generations.isEmpty())
         throw new RiverException("cannot change 'encrypted' of a backup that already has versions");
-      lock.check();
-      remote.writeConf(cur.withConfigFrom(cfg));
+      Conf next = cur.withConfigFrom(cfg);
+      next.revision = snap.revision() + 1;
+      remote.commit(next);
+      remote.cleanup(next.revision, err::println);
     } catch (IOException e) {
       throw new RiverException("cannot update config: " + e.getMessage(), e);
     }
     return 0;
   }
 
-  int unlock(Url url) {
-    try {
-      remote(url).writeLock(new Remote.LockEntry("unlocked", 0));
-    } catch (IOException e) {
-      throw new RiverException("cannot unlock: " + e.getMessage(), e);
-    }
-    return 0;
-  }
-
   int backup(Url url) {
     Driver driver = new Driver(home, url);
-    Remote remote = new Remote(driver, url);
-    try (LocalLock ll = LocalLock.acquire(lockDir(), url); Lock lock = Lock.acquire(remote)) {
-      Conf conf = remote.readConf();
-      String fingerprint = conf.stateFingerprint();
+    Remote remote = new Remote(driver, url, keyOrNull());
+    try (LocalLock ll = LocalLock.acquire(lockDir(), url)) {
+      Remote.Snapshot snap = remote.latest();
+      Conf conf = Conf.parse(snap.conf().dump());  // a copy: the snapshot's own is what its revision committed
       checkKey(conf.encrypted);
       if (conf.paths.isEmpty()) throw new RiverException("no paths to back up in config");
+      int revision = snap.revision() + 1;
 
       // keep_incremental_backup_count incrementals follow the first, full, version of a generation
       Conf.Generation last = conf.lastGeneration();
       boolean fresh = last == null || last.versions.size() > conf.keepIncrementalBackupCount;
       Conf.Generation gen = fresh ? new Conf.Generation("g" + GEN_NAME.format(Instant.now())) : last;
-      String indexOut = gen.name + "/idx-" + System.currentTimeMillis() + "-"
-          + HexFormat.of().toHexDigits((short) ThreadLocalRandom.current().nextInt(65536)) + ".jpaq";
 
-      DriverStorage storage = new DriverStorage(driver, lock);
-      ZpaqArchive.AddResult added;
-      try {
-        added = zpaq(storage, gen.name + "/" + TOME_PATTERN, conf, e -> {
-          // the index must be the one river.conf says: otherwise jpaq would number the new tome wrongly
-          if (e instanceof Event.ArchiveRead r && gen.index != null && r.versions() != gen.versions.size())
-            storage.poison("index " + gen.index + " has " + r.versions() + " versions but river.conf says "
-                + gen.versions.size() + "; refusing to write");
-        }, a -> a.add(b -> b.files(conf.paths)
-            .prune(n -> anyPath(conf.exclude, n))
-            .accept(n -> (conf.includeOnly.isEmpty() || anyPath(conf.includeOnly, n)) && !anyPath(conf.exclude, n))
-            .method(conf.method)
-            .index(gen.index)
-            .indexOut(indexOut)));
-      } catch (RuntimeException e) {
-        if (fresh) quietDelete(driver, gen.name);
-        throw e;
-      }
+      DriverStorage storage = new DriverStorage(driver, gen, revision);
+      ZpaqArchive.AddResult added = zpaq(storage, DriverStorage.ARCHIVE, conf, e -> {
+        // the index must be the one the config says: otherwise jpaq would number the new tome wrongly
+        if (e instanceof Event.ArchiveRead r && gen.index != null && r.versions() != gen.versions.size())
+          storage.poison("index " + gen.index + " has " + r.versions() + " versions but the config says "
+              + gen.versions.size() + "; refusing to write");
+      }, a -> a.add(b -> b.files(conf.paths)
+          .prune(n -> anyPath(conf.exclude, n))
+          .accept(n -> (conf.includeOnly.isEmpty() || anyPath(conf.includeOnly, n)) && !anyPath(conf.exclude, n))
+          .method(conf.method)
+          .index(gen.index == null ? null : DriverStorage.INDEX)
+          .indexOut(DriverStorage.INDEX_OUT)));
       int rc = added.unreadable() > 0 ? 1 : 0;
       // an update with changes writes a tome and the index; an empty one writes nothing
       if (added.addedBytes() == 0) {
         if (verbose) err.println("nothing changed, no new version");
-        if (fresh) quietDelete(driver, gen.name);
         return rc;
       }
+      String tome = storage.newTome();
+      String index = storage.newIndex();
+      if (tome == null || index == null) throw new RiverException("archiver wrote no tome or index");
 
-      // commit: only if we still own the lock and nobody changed the state under us
-      lock.check();
-      Conf cur = remote.readConf();
-      if (!cur.stateFingerprint().equals(fingerprint))
-        throw new RiverException("river.conf changed while the backup was running, not committing");
-      String oldIndex = gen.index;
-      gen.index = indexOut;
+      // commit: the sealed config of the next revision refers to the new files, which are all stored by now
+      gen.index = index;
+      gen.tomes.add(tome);
       gen.versions.add(new Conf.Version(gen.versions.size() + 1, now()));
       if (fresh) conf.generations.add(gen);
-      List<String> dropped = new ArrayList<>();
-      while (conf.generations.size() > conf.keepFullBackupCount) dropped.add(conf.generations.remove(0).name);
-      remote.writeConf(conf);
-
-      // cleanup, best effort: leftovers are removed with their generation
-      try {
-        lock.check();
-        if (oldIndex != null) quietDelete(driver, oldIndex);
-        for (String d : dropped) quietDelete(driver, d);
-      } catch (IOException e) {
-        err.println("warning: lock lost after commit, not deleting old files: " + e.getMessage());
-      }
+      // beyond keep_full_backup_count the oldest generation is simply not referenced any more; cleanup removes it
+      while (conf.generations.size() > conf.keepFullBackupCount) conf.generations.remove(0);
+      conf.revision = revision;
+      remote.commit(conf);
+      remote.cleanup(revision, err::println);
       return rc;
     } catch (IOException e) {
       throw new RiverException("backup failed: " + e.getMessage(), e);
     }
   }
 
-  private void quietDelete(Driver driver, String rel) {
+  /**
+   * Runs a read-only operation on the latest backup state. If it fails and a newer revision has been committed
+   * meanwhile (cleanup may have removed files of the one we used), it is run again on that.
+   */
+  private <T> T readLatest(Url url, Function<Remote.Snapshot, T> f) {
+    Remote remote = remote(url);
+    Remote.Snapshot snap = remote.latest();
     try {
-      driver.delete(rel);
-    } catch (IOException e) {
-      err.println("warning: " + e.getMessage());
+      return f.apply(snap);
+    } catch (RiverException e) {
+      Remote.Snapshot again;
+      try {
+        again = remote.latestOrNull();
+      } catch (IOException | RiverException x) {
+        throw e;
+      }
+      if (again == null || again.revision() <= snap.revision()) throw e;
+      return f.apply(again);
     }
   }
 
   int list(Url url, String filesVersion) {
-    Remote remote = remote(url);
-    Conf conf = remote.readConf();
-    if (filesVersion == null) {
-      for (Conf.Generation g : conf.generations)
-        for (Conf.Version v : g.versions) out.println(g.name + ":" + v.n() + "\t" + v.time());
+    return readLatest(url, snap -> {
+      Conf conf = snap.conf();
+      if (filesVersion == null) {
+        for (Conf.Generation g : conf.generations)
+          for (Conf.Version v : g.versions) out.println(g.name + ":" + v.n() + "\t" + v.time());
+        return 0;
+      }
+      checkKey(conf.encrypted);
+      Selected s = select(conf, filesVersion);
+      ArchiveContents contents = zpaq(new DriverStorage(remote(url).driver, s.gen), DriverStorage.ARCHIVE, conf, null,
+          a -> a.read(r -> r.index(DriverStorage.INDEX).version(s.version.n())));
+      for (ArchiveContents.Entry e : contents.entries()) if (!e.isDirectory()) out.println(e.name());
       return 0;
-    }
-    checkKey(conf.encrypted);
-    Selected s = select(conf, filesVersion);
-    ArchiveContents contents = zpaq(new DriverStorage(remote.driver, Guard.NONE), s.gen.name + "/" + TOME_PATTERN,
-        conf, null, a -> a.read(r -> r.index(s.gen.index).version(s.version.n())));
-    for (ArchiveContents.Entry e : contents.entries()) if (!e.isDirectory()) out.println(e.name());
-    return 0;
+    });
   }
 
   int restore(Url url, String version, String to, List<String> files, boolean verify) {
-    Remote remote = remote(url);
-    Conf conf = remote.readConf();
-    checkKey(conf.encrypted);
-    Selected s = select(conf, version);
-    List<String> targets = to == null || verify ? List.of() : targets(to, files);
-    ZpaqArchive.ExtractResult r = zpaq(new DriverStorage(remote.driver, Guard.NONE),
-        s.gen.name + "/" + TOME_PATTERN, conf, null, a -> a.extract(x -> {
-          x.index(s.gen.index).version(s.version.n()).overwrite(true).test(verify);
-          if (!files.isEmpty()) x.select(n -> anyPath(files, n));
-          if (files.isEmpty() && !targets.isEmpty()) x.under(targets.get(0));
-          else if (!targets.isEmpty()) x.output(n -> rename(n, files, targets));
-        }));
-    return r.ok() ? 0 : 1;
+    return readLatest(url, snap -> {
+      Conf conf = snap.conf();
+      checkKey(conf.encrypted);
+      Selected s = select(conf, version);
+      List<String> targets = to == null || verify ? List.of() : targets(to, files);
+      ZpaqArchive.ExtractResult r = zpaq(new DriverStorage(remote(url).driver, s.gen), DriverStorage.ARCHIVE, conf, null,
+          a -> a.extract(x -> {
+            x.index(DriverStorage.INDEX).version(s.version.n()).overwrite(true).test(verify);
+            if (!files.isEmpty()) x.select(n -> anyPath(files, n));
+            if (files.isEmpty() && !targets.isEmpty()) x.under(targets.get(0));
+            else if (!targets.isEmpty()) x.output(n -> rename(n, files, targets));
+          }));
+      return r.ok() ? 0 : 1;
+    });
   }
 
   /** The name with the first of {@code files} that is a prefix of it replaced by its target. */
@@ -352,19 +348,10 @@ final class Commands {
   }
 
   int delete(Url url) {
-    Driver driver = new Driver(home, url);
-    Remote remote = new Remote(driver, url);
-    try (LocalLock ll = LocalLock.acquire(lockDir(), url); Lock lock = Lock.acquire(remote)) {
-      Conf conf = remote.readConf();
-      for (Conf.Generation g : conf.generations) {
-        lock.check();
-        driver.delete(g.name);
-      }
-      lock.check();
-      driver.delete(Remote.CONF);
-      // the lock file goes last; closing the lock then finds nothing and says so
-      driver.delete(Remote.LOCK);
-      lock.abandon();
+    Remote remote = remote(url);
+    try (LocalLock ll = LocalLock.acquire(lockDir(), url)) {
+      if (!remote.exists()) throw new RiverException("no backup at " + url);
+      remote.deleteAll(n -> {});
     } catch (IOException e) {
       throw new RiverException("delete failed: " + e.getMessage(), e);
     }

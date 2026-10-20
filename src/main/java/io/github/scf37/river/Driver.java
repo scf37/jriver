@@ -4,19 +4,23 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
- * A storage driver: the directory {@code drivers/<name>} next to the river executable with three
- * executables, called as {@code <op> <url path> <relative path>}:
+ * A storage driver: the directory {@code drivers/<name>} next to the river executable with four
+ * executables, called as {@code <op> <url path> <argument>}:
  *
  * <ul>
- *   <li>{@code upload}: reads the file from stdin
- *   <li>{@code download}: writes the file to stdout
- *   <li>{@code delete}: deletes the file or directory (recursively); a missing file is no error
+ *   <li>{@code upload <file>}: reads the file from stdin; exit code 0 only if all of it was stored
+ *   <li>{@code download <file>}: writes the file to stdout
+ *   <li>{@code delete <file>}: deletes the file; a missing file is no error
+ *   <li>{@code list <prefix>}: names of the files starting with prefix, one per line
  * </ul>
  *
- * A non-zero exit code is a failure; stderr is passed through to the user.
+ * Files are flat names without directories. A non-zero exit code is a failure; stderr is passed through to the user.
  */
 final class Driver {
   private final Path dir;
@@ -50,13 +54,35 @@ final class Driver {
   }
 
   byte[] download(String rel) throws IOException {
+    return download(rel, Integer.MAX_VALUE - 8);
+  }
+
+  /** Downloads a small file; more than {@code max} bytes is an error (the storage is not trusted). */
+  byte[] download(String rel, int max) throws IOException {
     Process p = start("download", rel, false);
+    byte[] b;
+    try (InputStream in = p.getInputStream()) {
+      b = in.readNBytes(max + 1);
+      if (b.length > max) {
+        p.destroyForcibly();
+        throw new IOException("download " + rel + ": file is larger than " + max + " bytes");
+      }
+    }
+    check(p, "download " + rel);
+    return b;
+  }
+
+  /** File names starting with prefix. A failed listing is an error, an empty one is not. */
+  List<String> list(String prefix) throws IOException {
+    Process p = start("list", prefix, false);
     byte[] b;
     try (InputStream in = p.getInputStream()) {
       b = in.readAllBytes();
     }
-    check(p, "download " + rel);
-    return b;
+    check(p, "list " + prefix);
+    List<String> r = new ArrayList<>();
+    for (String line : new String(b, StandardCharsets.UTF_8).split("\n")) if (!line.isEmpty()) r.add(line);
+    return r;
   }
 
   void upload(String rel, byte[] data) throws IOException {

@@ -6,7 +6,7 @@
 
   <groupId>io.github.scf37.river</groupId>
   <artifactId>jriver</artifactId>
-  <version>0.1.0</version>
+  <version>0.2.0</version>
   <name>jriver</name>
   <description>Streaming incremental remote backups on top of jpaq</description>
 

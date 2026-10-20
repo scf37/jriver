@@ -5,25 +5,66 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
- * jpaq {@link Storage} on top of a {@link Driver}: everything is streamed through the driver
- * scripts. Writes are guarded: no blob is opened and no byte is sent unless the {@link Guard}
- * (the lock) says we still hold it; a lost guard kills the upload process so that it cannot finish.
+ * jpaq {@link Storage} for one generation on top of a {@link Driver}: everything is streamed through the driver
+ * scripts. jpaq works with logical names, the files at the backup root have names that carry the revision and a
+ * random part (see {@link Names}); the config of a generation says which is which:
+ *
+ * <ul>
+ *   <li>{@code arc-00000k.jpaq} is the k-th of {@link Conf.Generation#tomes}
+ *   <li>{@link #INDEX} is {@link Conf.Generation#index}
+ *   <li>a tome written by this run gets a new name for the revision being committed, so does {@link #INDEX_OUT}
+ * </ul>
+ *
+ * Nothing that was committed is ever overwritten or deleted by this class.
  */
 final class DriverStorage implements Storage {
+  /** The archive name to give to jpaq. */
+  static final String ARCHIVE = "arc-??????.jpaq";
+  /** Logical name of the index to read. */
+  static final String INDEX = "index";
+  /** Logical name of the index to write. */
+  static final String INDEX_OUT = "index.new";
+
+  private static final Pattern TOME = Pattern.compile("arc-(\\d{6})\\.jpaq");
+
   private final Driver driver;
-  private final Guard guard;
+  private final Conf.Generation gen;
+  private final int revision;
+  private final Map<String, String> written = new HashMap<>();  // logical -> physical name of what this run wrote
   private volatile String poisoned;
 
-  DriverStorage(Driver driver, Guard guard) {
+  /** Storage for generation gen; new files are named for revision. */
+  DriverStorage(Driver driver, Conf.Generation gen, int revision) {
     this.driver = driver;
-    this.guard = guard;
+    this.gen = gen;
+    this.revision = revision;
+  }
+
+  /** Storage that only reads. */
+  DriverStorage(Driver driver, Conf.Generation gen) {
+    this(driver, gen, 0);
+  }
+
+  /** The tome written by this run, null if none. */
+  String newTome() {
+    return written.entrySet().stream().filter(e -> TOME.matcher(e.getKey()).matches()).map(Map.Entry::getValue)
+        .findFirst().orElse(null);
+  }
+
+  /** The index written by this run, null if none. */
+  String newIndex() {
+    return written.get(INDEX_OUT);
   }
 
   /**
    * Makes every further write fail and the whole command fail. jpaq goes on with an empty archive
-   * when the index it was told to read cannot be read, and would then overwrite committed tomes;
+   * when the index it was told to read cannot be read, and would then write a tome under a number that is taken;
    * a failed download is therefore fatal, whatever jpaq makes of it.
    */
   void poison(String why) {
@@ -35,14 +76,31 @@ final class DriverStorage implements Storage {
     return poisoned;
   }
 
+  private String readName(String logical) throws IOException {
+    if (logical.equals(INDEX)) {
+      if (gen.index == null) throw new IOException("the generation has no index");
+      return gen.index;
+    }
+    Matcher m = TOME.matcher(logical);
+    if (m.matches()) {
+      int k = Integer.parseInt(m.group(1));
+      if (k >= 1 && k <= gen.tomes.size()) return gen.tomes.get(k - 1);
+      String mine = written.get(logical);
+      if (mine != null) return mine;
+    }
+    throw new IOException("no such file in the archive: " + logical);
+  }
+
   @Override
-  public InputStream read(String name) throws IOException {
+  public InputStream read(String logical) throws IOException {
     Process p;
+    String name;
     try {
+      name = readName(logical);
       p = driver.start("download", name, false);
       p.getOutputStream().close();
     } catch (IOException e) {
-      poison("download " + name + " failed: " + e.getMessage());
+      poison("download " + logical + " failed: " + e.getMessage());
       throw e;
     }
     return new FilterInputStream(p.getInputStream()) {
@@ -83,31 +141,26 @@ final class DriverStorage implements Storage {
   }
 
   @Override
-  public OutputStream write(String name) throws IOException {
-    if (poisoned != null) throw new IOException("not writing " + name + ": " + poisoned);
-    guard.beforeOpen();
+  public OutputStream write(String logical) throws IOException {
+    if (poisoned != null) throw new IOException("not writing " + logical + ": " + poisoned);
+    String name;
+    Matcher m = TOME.matcher(logical);
+    if (m.matches()) {
+      // the tome number comes from the index; it must continue the tomes of the config
+      if (Integer.parseInt(m.group(1)) != gen.tomes.size() + 1 || newTome() != null)
+        throw new IOException("refusing to write " + logical + ": the generation has " + gen.tomes.size() + " tomes");
+      name = Names.tome(revision);
+    } else if (logical.equals(INDEX_OUT)) {
+      name = Names.index(revision);
+    } else {
+      throw new IOException("refusing to write " + logical);
+    }
+    written.put(logical, name);
     Process p = driver.start("upload", name, true);
     p.getInputStream().close();
     OutputStream out = p.getOutputStream();
     return new OutputStream() {
       private boolean closed;
-      private volatile boolean aborted;
-      private final Runnable unregister = guard.onLost(this::abort);
-
-      private void abort() {
-        aborted = true;
-        p.destroyForcibly();
-      }
-
-      private void check() throws IOException {
-        if (aborted) throw new IOException("upload " + name + " aborted");
-        try {
-          guard.beforeWrite();
-        } catch (IOException e) {
-          abort();
-          throw e;
-        }
-      }
 
       @Override
       public void write(int b) throws IOException {
@@ -116,7 +169,6 @@ final class DriverStorage implements Storage {
 
       @Override
       public void write(byte[] b, int off, int len) throws IOException {
-        check();
         out.write(b, off, len);
       }
 
@@ -124,11 +176,6 @@ final class DriverStorage implements Storage {
       public void close() throws IOException {
         if (closed) return;
         closed = true;
-        unregister.run();
-        if (aborted) {
-          p.destroyForcibly();
-          throw new IOException("upload " + name + " aborted");
-        }
         try {
           out.close();
         } finally {
@@ -138,8 +185,10 @@ final class DriverStorage implements Storage {
     };
   }
 
+  /** Only what this run wrote can be deleted (a partial tome after a failure). */
   @Override
-  public void delete(String name) throws IOException {
-    driver.delete(name);
+  public void delete(String logical) throws IOException {
+    String name = written.remove(logical);
+    if (name != null) driver.delete(name);
   }
 }

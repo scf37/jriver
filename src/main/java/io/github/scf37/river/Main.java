@@ -11,9 +11,9 @@ public final class Main {
   private static final String HELP = """
       Usage: river [-v] <command> [arguments]
 
-      Incremental backups to any remote place that can be reached with three scripts.
+      Incremental backups to any remote place that can be reached with four scripts.
       A backup is addressed by <url>: <driver>:<driver specific path>. Drivers are the
-      directories under drivers/ next to this program (upload, download, delete scripts).
+      directories under drivers/ next to this program (upload, download, delete, list scripts).
 
       Commands:
         init [file]                          write an example config to file (stdout if omitted)
@@ -25,14 +25,13 @@ public final class Main {
                                              restore (default: latest version) in place or under dir
         verify <url> [<version>]             check that the version can be restored, write nothing
         delete <url> --yes                   delete the whole backup, irreversibly
-        unlock <url>                         force-release the lock of a crashed backup
         help                                 this text
 
       A version is <generation>:<n> as shown by list, or 'latest'.
       Encrypted backups need the key in the river_key environment variable
       (or river_key_file: path of a file with the key).
       -v shows what the archiver does; otherwise river only speaks on problems.
-      Exit codes: 0 ok, 1 ok but some files had problems, 2 error, 3 backup is locked.
+      Exit codes: 0 ok, 1 ok but some files had problems, 2 error, 3 backup is already running on this machine.
       """;
 
   private Main() {}
@@ -113,10 +112,6 @@ public final class Main {
           count(cmd, args, 1, 1);
           if (!yes) throw new RiverException("this deletes the whole backup irreversibly; pass --yes to do it");
           yield c.delete(Url.parse(args.get(0)));
-        }
-        case "unlock" -> {
-          count(cmd, args, 1, 1);
-          yield c.unlock(Url.parse(args.get(0)));
         }
         default -> throw new RiverException("unknown command '" + cmd + "' (river help)");
       };

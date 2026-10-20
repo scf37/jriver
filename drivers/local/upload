@@ -1,5 +1,5 @@
 #!/bin/sh
-# upload <dir> <relative file>: stdin -> <dir>/<file>, visible only when complete
+# upload <dir> <file>: stdin -> <dir>/<file>, visible only when complete (not required of drivers)
 set -eu
 [ $# = 2 ] || { echo "usage: upload <dir> <file> (data on stdin)" >&2; exit 2; }
 f="$1/$2"

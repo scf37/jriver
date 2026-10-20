@@ -2,11 +2,11 @@
 
 Incremental remote backups with no local temporary space. Java port of [river](https://github.com/scf37/river), built on
 [jpaq](https://github.com/scf37/jpaq) (zpaq in Java with a streaming archive format) instead of the zpaq binary:
-archives are streamed straight through three shell scripts, both when backing up and when restoring.
+archives are streamed straight through four shell scripts, both when backing up and when restoring.
 
 - **self-discovery**: `river help`, `river init` writes a commented config; everything else is a few commands
-- **self-containment**: the config lives next to the backup (`river.conf`). To restore you need river, the backup url (and the key if encrypted)
-- **easy extension**: a driver is three scripts (upload, download, delete) that move bytes over stdin/stdout
+- **self-containment**: the config lives next to the backup (`config.*.yaml`). To restore you need river, the backup url (and the key if encrypted)
+- **easy extension**: a driver is four scripts (upload, download, delete, list) that move bytes over stdin/stdout; no atomic operations needed from the storage
 - **unix way**: no scheduler (use cron), no own transport, encryption or compression (zpaq's), silent unless something is wrong
 - **simple archive**: tomes and an index of the jpaq sequential format, one tome per backup run; readable with the jpaq command line
 
@@ -57,10 +57,9 @@ pointing at a file that holds it. There is deliberately no command line flag for
 | `restore <url> [<version>] [--to <dir>] [--files <path>...]` | default version `latest`; in place, or under `dir` |
 | `verify <url> [<version>]` | read everything of a version, write nothing |
 | `delete <url> --yes` | remove the whole backup |
-| `unlock <url>` | release the lock of a crashed backup |
 
 `-v` shows what the archiver does. Exit codes: `0` ok, `1` done but some files had problems (unreadable files),
-`2` error, `3` backup is locked.
+`2` error, `3` this backup is already running on this machine.
 
 Archives keep absolute names: `restore` without `--to` puts files back where they were. With `--to dir` the tree
 appears under `dir/<absolute path>`; with `--files /a/b/c --to dir` the match lands in `dir/c`.
@@ -77,52 +76,52 @@ Inside a generation unchanged data is stored once, so incremental versions are s
 
 ## What is stored
 
+Flat files at the backup root, nothing is ever overwritten:
+
 ```
-<url>/river.conf                      config + state (generations, versions); the only file that is ever overwritten
-<url>/lock                            the lock, see below
-<url>/g<time>/arc-000001.jpaq ...     one tome per backup run
-<url>/g<time>/idx-<unix ms>-<hex>.jpaq  the index of the generation; a new name per version, old one deleted after commit
+config.<revision>.<random>.yaml   config + state (generations, versions, the files they consist of); sealed
+arc<revision>.<random>.jpaq       one tome per backup run, named for the revision that wrote it
+idx<revision>.<random>.jpaq       the index of a generation, a new one per version
 ```
 
-`river.conf` has no secrets and no file names. A backup run uploads the tome, then the new index, then **commits by
-replacing `river.conf`** (it names the current index and lists the version). Anything uploaded but not committed (a
-failed or killed run) is ignored and overwritten by the next run, so only `river.conf` must be replaced atomically
-by the driver.
+`revision` is a counter (5 digits) of committed changes (a backup run or a config change), `random` is 32 bits of hex.
+A run uploads the tome, then the new index, then **commits by writing `config.<revision+1>.<random>.yaml`**, which
+names every file of the backup. The last line of a config is its seal, `mac: <salt>.<hash>`: SHA-256 of the file, or
+for encrypted backups an HMAC-SHA256 under a key derived from `river_key` with scrypt (N=131072, a fresh salt per
+file), so that nobody without the key can make river believe in another config. The latest backup state is the highest
+revision with a complete config. A config that was only partly uploaded is ignored; a complete one that does not
+verify (wrong key, tampering) is an error, never skipped. The config has no secrets and no file names of your data.
 
-## Locking
+So the storage needs no atomic operations: a failed or killed run leaves unreferenced files and no config, and
+nothing committed is touched. After a commit river removes what the latest and the previous revision do not refer
+to and that is older than the latest revision (newer files may belong to a run that is still going): old generations,
+old indexes, junk of failed runs. The previous revision is kept as a fallback. Details, and why this is safe, are in
+[docs/remote-protocol.md](docs/remote-protocol.md).
 
-Concurrent backups would corrupt each other, so `backup`, `config` and `delete` take a lease lock:
-
-- `lock` holds `<uuid> <expiry unix time>`. Take: read it, require it expired (plus 30 s clock skew allowance),
-  write own uuid with expiry now + 5 min, wait 3 s, read again and require our uuid (racers: the last writer wins,
-  the others back off). An unreadable or missing lock counts as held. Release writes expiry 0.
-- A heartbeat renews it every minute. If it finds another uuid, or cannot renew in time, the run aborts and kills the
-  running upload.
-- Nothing is written without checking: before every blob is opened (opening truncates), the lock is re-read;
-  before every chunk the wall clock is compared with the lease, so a process frozen for longer than the lease stops
-  at its first write after waking up. Before the commit the lock is checked again and `river.conf` must be unchanged.
-- The same backup url cannot be started twice on one machine (file lock in `~/.cache/river`, `river_lock_dir` to change).
-
-Known limits: needs clocks within about 30 s of each other (NTP); a process frozen for longer than the lease while an
-upload is already in flight can still push the bytes that are already in the pipe. `river verify` detects the damage.
-A crashed run holds the lock for at most 5 minutes (`river unlock` to skip the wait).
+Concurrent backups of one url are a mistake, not a supported mode. They do not corrupt anything (two configs of the
+same revision are both valid; the next backup continues from either), but one of the runs may not become part of the
+history, and a run that sees another one commit its revision first refuses to commit. The same backup url cannot be
+started twice on one machine (file lock in `~/.cache/river`, `river_lock_dir` to change).
 
 ## Drivers
 
-`drivers/<name>/{upload,download,delete}`, executable, called as `<script> <url path> <relative path>`:
+`drivers/<name>/{upload,download,delete,list}`, executable, called as `<script> <url path> <argument>`:
 
-- `upload`: the file arrives on **stdin**
-- `download`: write the file to **stdout**
-- `delete`: delete the file or directory (recursively); a missing file is not an error
+- `upload <file>`: the file arrives on **stdin**; exit 0 only if all of it was stored
+- `download <file>`: write the file to **stdout**
+- `delete <file>`: delete the file; a missing file is not an error
+- `list <prefix>`: the names of the files starting with prefix, one per line; no files is an empty output with exit 0
 
-A non-zero exit code is a failure; stderr goes to the user. Only `river.conf` and `lock` need atomic replacement
-(tmp file + rename, or an object store). The url `ssh:me@host:/data` calls the scripts in `drivers/ssh` with
-`me@host:/data`. Included: `local` (a directory), `ssh` (`SSH_OPTS` for options), `s3` (aws cli; `s3://bucket/prefix`),
-`rclone` (`remote:path`). The `ssh`, `s3` and `rclone` scripts are thin and untested against real servers here; the
-test suite runs on `local`.
+File names are flat (no directories). A non-zero exit code is a failure, **including a listing or download that is
+incomplete**; stderr goes to the user. Once `upload` has exited with 0, `download` and `list` must show the file (a
+partially visible file while it uploads, or after it failed, is fine). The url `ssh:me@host:/data` calls the scripts in
+`drivers/ssh` with `me@host:/data`. Included: `local` (a directory), `ssh` (`SSH_OPTS` for options), `s3` (aws cli;
+`s3://bucket/prefix`), `rclone` (`remote:path`). The `ssh`, `s3` and `rclone` scripts are thin and untested against
+real servers here; the test suite runs on `local`.
 
 ## Tests
 
-`mvn test` covers rolling and retention, restoring every version, encryption, exclude/include, empty updates, lock
-races, lease expiry and takeover, and fault injection at every step of a backup (tome, index, commit, cleanup,
-downloads) checking that the last committed version always restores bit-exact.
+`mvn test` covers rolling and retention, restoring every version, encryption (wrong or missing key), exclude/include,
+empty updates, the config seal and file names, torn and planted configs, concurrent commits, and fault injection at every
+step of a backup (tome, index, commit, cleanup, listing, downloads) checking that the last committed version always
+restores bit-exact.

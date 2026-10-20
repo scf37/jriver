@@ -93,35 +93,27 @@ class RiverTest {
     for (int n = 7; n >= 1; n--) assertEquals(names(n), f.restoredFiles(versions.get(n - 1)), "again " + n);
     assertEquals(names(7), f.restoredFiles("latest"));
 
-    // one tome per version, one index per generation, nothing else (no leftovers)
-    try (var s = Files.list(f.remote)) {
-      assertEquals(5, s.count(), "lock, river.conf and 3 generations");
-    }
-    for (String g : versions.stream().map(v -> v.substring(0, v.lastIndexOf(':'))).distinct().toList()) {
-      try (var s = Files.list(f.remote.resolve(g))) {
-        List<String> files = s.map(p -> p.getFileName().toString()).toList();
-        assertEquals(1, files.stream().filter(n -> n.startsWith("idx-")).count(), files.toString());
-        assertTrue(files.stream().noneMatch(n -> n.contains(".tmp")), files.toString());
-      }
-    }
+    // one tome per version, one index per generation, the last two configs, nothing else (no leftovers)
+    assertEquals(2, f.count("config."), f.remoteNames().toString());
+    assertEquals(3, f.count("idx"), f.remoteNames().toString());
+    assertEquals(7, f.count("arc"), f.remoteNames().toString());
+    assertEquals(12, f.remoteNames().size(), f.remoteNames().toString());
   }
 
   @Test
   void oldestGenerationIsDeletedBeyondKeepFull() throws IOException {
     f.create(f.config("").replace("keep_full_backup_count: 3", "keep_full_backup_count: 2"));
-    for (int n = 1; n <= 7; n++) {
+    for (int n = 1; n <= 8; n++) {
       f.write(n + ".file", String.valueOf(n));
       f.backup();
     }
     List<String> versions = f.versions();
-    assertEquals(4, versions.size(), "3 + 1 versions of the two newest generations");
+    assertEquals(5, versions.size(), "3 + 2 versions of the two newest generations");
     String first = versions.get(0).substring(0, versions.get(0).lastIndexOf(':'));
-    long dirs;
-    try (var s = Files.list(f.remote)) {
-      dirs = s.filter(Files::isDirectory).count();
-    }
-    assertEquals(2, dirs);
-    assertEquals(names(7), f.restoredFiles("latest"));
+    // the generation dropped by the previous backup is still the fallback of that revision; this one is without it
+    assertEquals(3, f.count("idx"), f.remoteNames().toString());
+    assertEquals(5, f.count("arc"), f.remoteNames().toString());
+    assertEquals(names(8), f.restoredFiles("latest"));
     assertEquals(names(4), f.restoredFiles(versions.get(0)), "oldest kept version " + first);
   }
 
@@ -180,12 +172,9 @@ class RiverTest {
     f.write("b.file", "B");
     f.backup();
     assertEquals(2, f.versions().size());
-    try (var s = Files.list(f.remote)) {
-      assertEquals(3, s.count(), "lock, river.conf, one generation: " + f.remote);
-    }
-    try (var s = Files.list(f.remote.resolve(f.versions().get(0).split(":")[0]))) {
-      assertEquals(3, s.count(), "two tomes and the index");
-    }
+    assertEquals(2, f.count("config."), f.remoteNames().toString());
+    assertEquals(2, f.count("idx"), "the index of the previous revision is kept as a fallback: " + f.remoteNames());
+    assertEquals(2, f.count("arc"), f.remoteNames().toString());
   }
 
   @Test
@@ -270,6 +259,59 @@ class RiverTest {
   }
 
   @Test
+  void wrongOrMissingKeyIsAnErrorThatTouchesNothing() throws IOException {
+    f.env.put("river_key", "right");
+    f.create(f.config("encrypted: true\n"));
+    f.write("a.file", "A");
+    f.backup();
+    List<String> before = f.remoteNames();
+    for (String key : new String[] {"wrong", null}) {
+      if (key == null) f.env.remove("river_key");
+      else f.env.put("river_key", key);
+      for (String[] cmd : new String[][] {{"backup", f.url}, {"list", f.url}, {"verify", f.url}}) {
+        Result r = f.river(cmd);
+        assertEquals(2, r.rc(), cmd[0] + " with key " + key + ": " + r);
+        assertTrue(r.err().contains(key == null ? "backup is encrypted" : "wrong key"), r.err());
+      }
+      Result again = f.riverStdin(f.config(key == null ? "" : "encrypted: true\n"), "create", f.url);
+      assertEquals(2, again.rc(), "an unverifiable backup is not a missing one: " + again);
+      assertEquals(before, f.remoteNames());
+    }
+    f.env.put("river_key", "right");
+    assertEquals(0, f.river("verify", f.url).rc());
+  }
+
+  @Test
+  void plantedConfigWithBadSealBlocksInsteadOfBeingSkipped() throws IOException {
+    f.create(f.config(""));
+    f.write("a.file", "A");
+    f.backup();
+    List<String> before = f.remoteNames();
+    Files.writeString(f.remote.resolve("config.00099.deadbeef.yaml"), "paths: ['/etc']\nrevision: 99\n\nmac: ." + "0".repeat(64) + "\n");
+    Result r = f.river("backup", f.url);
+    assertEquals(2, r.rc(), r.toString());
+    assertTrue(r.err().contains("revision 99"), r.err());
+    assertEquals(2, f.river("list", f.url).rc());
+    Files.delete(f.remote.resolve("config.00099.deadbeef.yaml"));
+    assertEquals(before, f.remoteNames());
+    assertEquals(0, f.river("list", f.url).rc());
+  }
+
+  @Test
+  void foreignFilesAreNeverTouched() throws IOException {
+    Files.createDirectories(f.remote);
+    List<String> foreign = List.of("notes.txt", "arc-000001.jpaq", "river.conf", "arc00001.XYZ.jpaq", "config.1.yaml");
+    for (String n : foreign) Files.writeString(f.remote.resolve(n), "mine");
+    f.create(f.config(""));
+    for (int n = 1; n <= 4; n++) {
+      f.write(n + ".file", "x");
+      f.backup();
+    }
+    assertEquals(0, f.river("delete", f.url, "--yes").rc());
+    assertEquals(foreign.stream().sorted().toList(), f.remoteNames());
+  }
+
+  @Test
   void keyWithoutEncryptionIsRejected() throws IOException {
     f.create(f.config(""));
     f.env.put("river_key", "k");
@@ -306,7 +348,7 @@ class RiverTest {
     f.write("a.file", "A");
     f.backup();
     assertEquals(2, f.river("delete", f.url).rc(), "needs --yes");
-    assertTrue(Files.exists(f.remote.resolve("river.conf")));
+    assertTrue(f.count("config.") > 0);
     assertEquals(0, f.river("delete", f.url, "--yes").rc());
     assertEquals(List.of(), f.files(f.remote));
     assertEquals(2, f.river("list", f.url).rc());

@@ -33,6 +33,7 @@ final class Fixture {
     Files.createDirectories(src);
     copyTree(Path.of("drivers"), home.resolve("drivers"));
     env.put("river_lock_dir", root.resolve("locks").toString());
+    ConfigFile.scryptN = 1 << 8;  // the real cost is tested in ConfigFileTest
     url = "local:" + remote;
   }
 
@@ -49,18 +50,22 @@ final class Fixture {
     }
   }
 
-  /** A driver that behaves like local but fails while the marker file {@code <remote>.fail} holds a glob. */
+  /**
+   * A driver that behaves like local but fails while the marker file {@code fail-pattern} holds a glob of
+   * {@code <op>:<name>}, and runs the shell script {@code hook.sh} (if there is one) when {@code hook-pattern} matches.
+   */
   void addFlakyDriver() throws IOException {
     Path d = home.resolve("drivers/flaky");
     Files.createDirectories(d);
     Path marker = root.resolve("fail-pattern");
-    for (String op : List.of("upload", "download", "delete")) {
+    Path hookMarker = root.resolve("hook-pattern");
+    Path hook = root.resolve("hook.sh");
+    for (String op : List.of("upload", "download", "delete", "list")) {
       Path s = d.resolve(op);
-      Path steal = root.resolve("steal-pattern");
       Files.writeString(s, "#!/bin/sh\nset -eu\nif [ -f '" + marker + "' ]; then\n  pat=$(cat '" + marker + "')\n"
           + "  case \"" + op + ":$2\" in $pat) echo \"flaky: injected failure\" >&2; exit 1 ;; esac\nfi\n"
-          + "if [ -f '" + steal + "' ]; then\n  pat=$(cat '" + steal + "')\n"
-          + "  case \"" + op + ":$2\" in $pat) echo 'someone-else 99999999999' > \"$1/lock\" ;; esac\nfi\n"
+          + "if [ -f '" + hookMarker + "' ]; then\n  pat=$(cat '" + hookMarker + "')\n"
+          + "  case \"" + op + ":$2\" in $pat) sh '" + hook + "' ;; esac\nfi\n"
           + "exec '" + home.resolve("drivers/local/" + op) + "' \"$@\"\n");
       Files.setPosixFilePermissions(s, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
           PosixFilePermission.OWNER_EXECUTE));
@@ -71,13 +76,28 @@ final class Fixture {
     Files.writeString(root.resolve("fail-pattern"), glob);
   }
 
-  /** The flaky driver puts a foreign lock in place when this operation happens (another process took over). */
-  void stealLockWhen(String glob) throws IOException {
-    Files.writeString(root.resolve("steal-pattern"), glob);
+  /** Runs the shell script (with $R = the remote directory) when the flaky driver does an operation matching glob. */
+  void hookWhen(String glob, String script) throws IOException {
+    Files.writeString(root.resolve("hook.sh"), "R='" + remote + "'\n" + script + "\n");
+    Files.writeString(root.resolve("hook-pattern"), glob);
   }
 
   void failNever() throws IOException {
     Files.deleteIfExists(root.resolve("fail-pattern"));
+    Files.deleteIfExists(root.resolve("hook-pattern"));
+  }
+
+  /** Sorted names of the files at the backup root. */
+  List<String> remoteNames() throws IOException {
+    if (!Files.exists(remote)) return List.of();
+    try (Stream<Path> s = Files.list(remote)) {
+      return s.map(p -> p.getFileName().toString()).sorted().toList();
+    }
+  }
+
+  /** How many files at the backup root start with prefix. */
+  long count(String prefix) throws IOException {
+    return remoteNames().stream().filter(n -> n.startsWith(prefix)).count();
   }
 
   Result river(String... args) {

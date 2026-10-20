@@ -10,8 +10,8 @@ import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.SafeConstructor;
 
 /**
- * Contents of {@code river.conf}: the configuration (edited by the user) and the state (kept by
- * river): generations and their versions.
+ * Contents of a config file: the configuration (edited by the user) and the state (kept by river):
+ * the revision, the generations with their files and versions.
  */
 final class Conf {
   /** Version {@code n} of a generation (the n-th version in its index). */
@@ -20,7 +20,8 @@ final class Conf {
   /** One chain of archive versions: a full backup followed by incremental ones. */
   static final class Generation {
     final String name;
-    String index;  // current index file, relative to the backup root; null before the first commit
+    String index;  // current index file at the backup root; null before the first commit
+    final List<String> tomes = new ArrayList<>();  // tome files in archive order
     final List<Version> versions = new ArrayList<>();
 
     Generation(String name) {
@@ -35,6 +36,7 @@ final class Conf {
   int keepIncrementalBackupCount = 30;
   int keepFullBackupCount = 3;
   boolean encrypted;
+  int revision;
   final List<Generation> generations = new ArrayList<>();
 
   private static Yaml yaml() {
@@ -64,18 +66,21 @@ final class Conf {
     return c;
   }
 
-  /** Parses river.conf: configuration and state. */
+  /** Parses a config file body: configuration and state. */
   static Conf parse(String text) {
-    Map<String, Object> m = parseMap(text, "river.conf");
+    Map<String, Object> m = parseMap(text, "config");
     Conf c = new Conf();
-    c.readConfig(m, "river.conf");
+    c.readConfig(m, "config");
+    c.revision = integer(m.get("revision"), "revision");
     Object gens = m.get("generations");
     if (gens != null) {
       for (Object g : list(gens, "generations")) {
         Map<String, Object> gm = map(g, "generations[]");
         Generation gen = new Generation(str(gm.get("name"), "generations[].name"));
         Object idx = gm.get("index");
-        gen.index = idx == null ? null : str(idx, "generations[].index");
+        gen.index = idx == null ? null : Names.require(str(idx, "generations[].index"), "generations[].index").name();
+        for (Object t : list(gm.get("tomes"), "tomes"))
+          gen.tomes.add(Names.require(str(t, "generations[].tomes[]"), "generations[].tomes[]").name());
         for (Object v : list(gm.get("versions"), "versions")) {
           Map<String, Object> vm = map(v, "versions[]");
           gen.versions.add(new Version(integer(vm.get("n"), "versions[].n"), str(vm.get("time"), "versions[].time")));
@@ -123,6 +128,7 @@ final class Conf {
       Map<String, Object> gm = new LinkedHashMap<>();
       gm.put("name", g.name);
       gm.put("index", g.index);
+      gm.put("tomes", g.tomes);
       List<Object> vs = new ArrayList<>();
       for (Version v : g.versions) {
         Map<String, Object> vm = new LinkedHashMap<>();
@@ -134,6 +140,7 @@ final class Conf {
       gens.add(gm);
     }
     Map<String, Object> m = new LinkedHashMap<>();
+    m.put("revision", revision);
     m.put("generations", gens);
     return m;
   }
@@ -142,16 +149,11 @@ final class Conf {
     return yaml().dump(configMap());
   }
 
-  /** river.conf text. */
+  /** Config file body (without the seal). */
   String dump() {
     Map<String, Object> m = configMap();
     m.putAll(stateMap());
     return yaml().dump(m);
-  }
-
-  /** Identifies the state: changes whenever a backup is committed or generations roll. */
-  String stateFingerprint() {
-    return yaml().dump(stateMap());
   }
 
   /** Same state, new configuration. */
@@ -164,6 +166,7 @@ final class Conf {
     c.keepIncrementalBackupCount = cfg.keepIncrementalBackupCount;
     c.keepFullBackupCount = cfg.keepFullBackupCount;
     c.encrypted = cfg.encrypted;
+    c.revision = revision;
     c.generations.addAll(generations);
     return c;
   }

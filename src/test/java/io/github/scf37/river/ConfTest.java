@@ -16,7 +16,10 @@ class ConfTest {
     c.keepIncrementalBackupCount = 5;
     c.keepFullBackupCount = 2;
     Conf.Generation g = new Conf.Generation("g1");
-    g.index = "g1/idx-1-abcd.jpaq";
+    g.index = "idx00002.0a1b2c3d.jpaq";
+    g.tomes.add("arc00001.11111111.jpaq");
+    g.tomes.add("arc00002.22222222.jpaq");
+    c.revision = 2;
     g.versions.add(new Conf.Version(1, "2026-01-01T00:00:00Z"));
     g.versions.add(new Conf.Version(2, "2026-01-02T00:00:00Z"));
     c.generations.add(g);
@@ -26,16 +29,18 @@ class ConfTest {
     assertEquals(List.of("/etc", "/home/me with space"), d.paths);
     assertEquals("2", d.method);
     assertEquals(2, d.generation("g1").versions.size());
-    assertEquals("g1/idx-1-abcd.jpaq", d.generation("g1").index);
-    assertEquals(c.stateFingerprint(), d.stateFingerprint());
+    assertEquals("idx00002.0a1b2c3d.jpaq", d.generation("g1").index);
+    assertEquals(List.of("arc00001.11111111.jpaq", "arc00002.22222222.jpaq"), d.generation("g1").tomes);
+    assertEquals(2, d.revision);
   }
 
   @Test
-  void stateFingerprintChangesWithState() {
-    Conf c = new Conf();
-    String before = c.stateFingerprint();
-    c.generations.add(new Conf.Generation("g"));
-    assertEquals(false, before.equals(c.stateFingerprint()));
+  void fileNamesInTheConfigAreChecked() {
+    String ok = "paths: [/a]\nrevision: 1\ngenerations:\n- name: g\n  index: idx00001.0a1b2c3d.jpaq\n  tomes: [%s]\n  versions: []\n";
+    Conf.parse(ok.formatted("arc00001.0a1b2c3d.jpaq"));
+    for (String bad : List.of("../arc00001.0a1b2c3d.jpaq", "config.00001.0a1b2c3d.yaml", "x; rm -rf ~", "'a b'"))
+      assertThrows(RiverException.class, () -> Conf.parse(ok.formatted(bad)), bad);
+    assertThrows(RiverException.class, () -> Conf.parse("paths: [/a]\n"), "revision is required");
   }
 
   @Test

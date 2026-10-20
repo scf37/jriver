@@ -1,0 +1,10 @@
+#!/bin/sh
+# list <user@host:/dir> <prefix>: names of the files starting with prefix, one per line (a missing dir is empty).
+# ssh options via SSH_OPTS.
+set -eu
+[ $# = 2 ] || { echo "usage: list <user@host:/dir> <prefix>" >&2; exit 2; }
+host=${1%%:*}; dir=${1#*:}
+q() { printf "'%s'" "$(printf %s "$1" | sed "s/'/'\\\\''/g")"; }
+# shellcheck disable=SC2086
+out=$(ssh $SSH_OPTS "$host" "if [ -d $(q "$dir") ]; then ls -1 $(q "$dir"); fi")
+printf '%s\n' "$out" | awk -v p="$2" 'length($0) > 0 && index($0, p) == 1'

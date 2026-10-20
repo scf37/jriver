@@ -1,9 +1,11 @@
 #!/bin/sh
-# list <s3://bucket/prefix> <prefix>: names of the objects starting with prefix, one per line (needs the aws cli).
+# list <s3://bucket/prefix> <prefix>: the entries (objects and "folders") of one level starting with prefix, one per
+# line, as name or folder/name (needs the aws cli). A prefix with a folder part ("f/arc") lists inside that folder.
 # 'aws s3 ls' exits with 1 and prints nothing when nothing matches; that is an empty listing, not a failure.
 set -eu
 [ $# = 2 ] || { echo "usage: list <s3://bucket/prefix> <prefix>" >&2; exit 2; }
+sub=${2%"${2##*/}"}
 rc=0
 out=$(aws s3 ls "$1/$2") || rc=$?
 if [ "$rc" != 0 ] && { [ "$rc" != 1 ] || [ -n "$out" ]; }; then exit "$rc"; fi
-printf '%s\n' "$out" | awk -v p="$2" 'NF == 4 && index($4, p) == 1 { print $4 }'
+printf '%s\n' "$out" | awk -v d="$sub" '$1 == "PRE" { print d $2 } NF == 4 { print d $4 }'

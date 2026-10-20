@@ -15,31 +15,37 @@ class ConfTest {
     c.method = "2";
     c.keepIncrementalBackupCount = 5;
     c.keepFullBackupCount = 2;
-    Conf.Generation g = new Conf.Generation("g1");
-    g.index = "idx00002.0a1b2c3d.jpaq";
-    g.tomes.add("arc00001.11111111.jpaq");
-    g.tomes.add("arc00002.22222222.jpaq");
+    Conf.FullBackup g = new Conf.FullBackup("20260101T000000000");
+    g.index = "20260101T000000000/idx00002.0a1b2c3d.jpaq";
+    g.tomes.add("20260101T000000000/arc00001.11111111.jpaq");
+    g.tomes.add("20260101T000000000/arc00002.22222222.jpaq");
     c.revision = 2;
     g.versions.add(new Conf.Version(1, "2026-01-01T00:00:00Z"));
     g.versions.add(new Conf.Version(2, "2026-01-02T00:00:00Z"));
-    c.generations.add(g);
+    c.fullBackups.add(g);
 
     Conf d = Conf.parse(c.dump());
     assertEquals(c.dump(), d.dump());
     assertEquals(List.of("/etc", "/home/me with space"), d.paths);
     assertEquals("2", d.method);
-    assertEquals(2, d.generation("g1").versions.size());
-    assertEquals("idx00002.0a1b2c3d.jpaq", d.generation("g1").index);
-    assertEquals(List.of("arc00001.11111111.jpaq", "arc00002.22222222.jpaq"), d.generation("g1").tomes);
+    assertEquals(2, d.fullBackup("20260101T000000000").versions.size());
+    assertEquals("20260101T000000000/idx00002.0a1b2c3d.jpaq", d.fullBackup("20260101T000000000").index);
+    assertEquals(List.of("20260101T000000000/arc00001.11111111.jpaq", "20260101T000000000/arc00002.22222222.jpaq"), d.fullBackup("20260101T000000000").tomes);
     assertEquals(2, d.revision);
   }
 
   @Test
   void fileNamesInTheConfigAreChecked() {
-    String ok = "paths: [/a]\nrevision: 1\ngenerations:\n- name: g\n  index: idx00001.0a1b2c3d.jpaq\n  tomes: [%s]\n  versions: []\n";
-    Conf.parse(ok.formatted("arc00001.0a1b2c3d.jpaq"));
-    for (String bad : List.of("../arc00001.0a1b2c3d.jpaq", "config.00001.0a1b2c3d.yaml", "x; rm -rf ~", "'a b'"))
-      assertThrows(RiverException.class, () -> Conf.parse(ok.formatted(bad)), bad);
+    String ok = "paths: [/a]\nrevision: 1\nfull_backups:\n- name: %s\n  index: %s\n  tomes: [%s]\n  versions: []\n";
+    String f = "20260101T000000000";
+    String idx = f + "/idx00001.0a1b2c3d.jpaq";
+    String arc = f + "/arc00001.0a1b2c3d.jpaq";
+    Conf.parse(ok.formatted(f, idx, arc));
+    for (String bad : List.of("../arc00001.0a1b2c3d.jpaq", "config.00001.0a1b2c3d.yaml", "x; rm -rf ~", "'a b'",
+        "arc00001.0a1b2c3d.jpaq", "20250101T000000000/arc00001.0a1b2c3d.jpaq", f + "/../arc00001.0a1b2c3d.jpaq"))
+      assertThrows(RiverException.class, () -> Conf.parse(ok.formatted(f, idx, bad)), bad);
+    for (String bad : List.of("g20260101T000000000", "../x", "20260101T000000000/x", "x"))
+      assertThrows(RiverException.class, () -> Conf.parse(ok.formatted(bad, idx, arc)), bad);
     assertThrows(RiverException.class, () -> Conf.parse("paths: [/a]\n"), "revision is required");
   }
 

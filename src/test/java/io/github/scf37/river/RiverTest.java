@@ -48,7 +48,7 @@ class RiverTest {
     assertEquals(0, r.rc());
     assertTrue(r.out().contains("method: '1'"), r.out());
     assertTrue(r.out().contains("keep_incremental_backup_count: 30"), r.out());
-    assertFalse(r.out().contains("generations"), "config shows configuration only");
+    assertFalse(r.out().contains("full_backups"), "config shows configuration only");
   }
 
   @Test
@@ -83,7 +83,7 @@ class RiverTest {
     }
     List<String> versions = f.versions();
     assertEquals(7, versions.size());
-    // keep_incremental_backup_count 2: a full backup and two incrementals per generation
+    // keep_incremental_backup_count 2: a full backup and two incrementals per full backup
     assertEquals(3, versions.stream().filter(v -> v.endsWith(":1")).count() + 0 * versions.size());
     assertEquals(List.of(3L, 3L, 1L),
         versions.stream().map(v -> v.substring(0, v.lastIndexOf(':'))).distinct()
@@ -93,7 +93,7 @@ class RiverTest {
     for (int n = 7; n >= 1; n--) assertEquals(names(n), f.restoredFiles(versions.get(n - 1)), "again " + n);
     assertEquals(names(7), f.restoredFiles("latest"));
 
-    // one tome per version, one index per generation, the last two configs, nothing else (no leftovers)
+    // one tome per version, one index per full backup, the last two configs, nothing else (no leftovers)
     assertEquals(2, f.count("config."), f.remoteNames().toString());
     assertEquals(3, f.count("idx"), f.remoteNames().toString());
     assertEquals(7, f.count("arc"), f.remoteNames().toString());
@@ -101,18 +101,20 @@ class RiverTest {
   }
 
   @Test
-  void oldestGenerationIsDeletedBeyondKeepFull() throws IOException {
+  void oldestFullBackupIsDeletedBeyondKeepFull() throws IOException {
     f.create(f.config("").replace("keep_full_backup_count: 3", "keep_full_backup_count: 2"));
     for (int n = 1; n <= 8; n++) {
       f.write(n + ".file", String.valueOf(n));
       f.backup();
     }
     List<String> versions = f.versions();
-    assertEquals(5, versions.size(), "3 + 2 versions of the two newest generations");
+    assertEquals(5, versions.size(), "3 + 2 versions of the two newest full backups");
     String first = versions.get(0).substring(0, versions.get(0).lastIndexOf(':'));
-    // the generation dropped by the previous backup is still the fallback of that revision; this one is without it
+    // the full backup dropped by the previous backup is still the fallback of that revision; this one is without it
     assertEquals(3, f.count("idx"), f.remoteNames().toString());
     assertEquals(5, f.count("arc"), f.remoteNames().toString());
+    assertEquals(2, f.folders().size(), "one folder per full backup, the dropped one is gone: " + f.folders());
+    assertEquals(versions.stream().map(v -> v.substring(0, v.lastIndexOf(':'))).distinct().sorted().toList(), f.folders());
     assertEquals(names(8), f.restoredFiles("latest"));
     assertEquals(names(4), f.restoredFiles(versions.get(0)), "oldest kept version " + first);
   }
@@ -351,6 +353,7 @@ class RiverTest {
     assertTrue(f.count("config.") > 0);
     assertEquals(0, f.river("delete", f.url, "--yes").rc());
     assertEquals(List.of(), f.files(f.remote));
+    assertEquals(List.of(), f.folders(), "no empty folders left");
     assertEquals(2, f.river("list", f.url).rc());
   }
 

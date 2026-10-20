@@ -18,7 +18,7 @@ the archive.
 
 ## Storage API
 
-Four operations over flat names (no directories), implemented by the driver scripts
+Four operations over names of the form `name` or `folder/name`, implemented by the driver scripts
 `drivers/<name>/{download,upload,delete,list}`. Every operation reports failure with a **non-zero exit code**; the
 output of a failed operation must not be trusted.
 
@@ -26,8 +26,8 @@ output of a failed operation must not be trusted.
 |-------------------|-----------|
 | `download <name>` | write the file to stdout. Non-zero exit on any failure or short read. |
 | `upload <name>`   | read the file from stdin. Non-atomic: a partial object may be visible while it runs or after it fails. Exit 0 **only** if the whole input was stored completely and durably. |
-| `delete <name>`   | idempotent; a missing file is exit 0. |
-| `list <prefix>`   | file names (as accepted by the other operations) starting with prefix, one per line. Exit 0 with empty output means "no files"; a failed or partial listing must be non-zero. |
+| `delete <name>`   | idempotent; a missing file is exit 0. A folder that this leaves empty is removed too (where folders exist). |
+| `list <prefix>`   | the entries (files and folders) of one level whose name starts with prefix, one per line, as `name` or `folder/name`; a prefix with a folder part lists inside that folder. Exit 0 with empty output means "no entries"; a failed or partial listing must be non-zero. |
 
 Required consistency: once `upload` has returned 0 the object is fully readable by `download` and present in `list`
 (read-after-write, across objects). The commit step below relies on this. A client never uploads a name again after
@@ -36,33 +36,38 @@ a failure; it uses a fresh random part.
 ## Names
 
 ```
-config.<revision>.<random>.yaml     commit marker of a revision (several if backups raced)
-arc<revision>.<random>.jpaq         a tome, written by that revision
-idx<revision>.<random>.jpaq         the index of a generation, written by that revision
+config.<revision>.<random>.yaml                  commit marker of a revision (several if backups raced)
+<full backup>/arc<revision>.<random>.jpaq        a tome, written by that revision
+<full backup>/idx<revision>.<random>.jpaq        the index of the full backup, written by that revision
 ```
+
+A full backup is a folder named by its creation time, `yyyyMMddTHHmmssSSS` (UTC), for example `20261020T113453047`.
 
 `<revision>` is zero padded to 5 digits (compared numerically), `<random>` is 32 bits as 8 lowercase hex digits.
 The random part only has to separate writers that target the **same** revision, so 32 bits is plenty.
 
 jriver accepts only names of exactly these formats from a listing and from a config; anything else is ignored,
-never passed to a driver and never deleted (so the directory can hold foreign files).
+never passed to a driver and never deleted (so the directory can hold foreign files). The client does not tell files
+from folders in a listing; an entry is a folder if its name (with or without a trailing slash) is a timestamp of the
+format below, and nothing else is ever looked at. The names of the files and folders it creates cannot clash. A tome or index named in a
+config must be in the folder of its full backup, and the folder name must be a timestamp of that format.
 
-## Revisions, generations
+## Revisions, full backups
 
 The **revision** is a counter of committed changes: a backup run that stored something, or a change of the config
 (`river config`). Every file carries the revision that wrote it. Revision 1 is the config written by `create`.
 
-A backup consists of **generations**: a full backup plus incremental versions, each generation being one jpaq
-sequential archive (tomes + one index). The config says which files make up each generation. jpaq works with logical
+A backup consists of **full backups**: a full version plus the incremental versions after it, each full backup being
+one jpaq sequential archive (tomes + one index) in a folder of its own. The config says which files make up each. jpaq works with logical
 names (`arc-000003.jpaq`, `index`); the storage adapter (`DriverStorage`) maps them using the config: the k-th
-logical tome is `tomes[k-1]`, `index` is the generation's `index`, and what a run writes gets new names for the
+logical tome is `tomes[k-1]`, `index` is the full backup's `index`, and what a run writes gets new names for the
 revision being committed. It refuses to write a tome that does not continue the tomes of the config, and it never
 touches a committed file. Archives are not repacked or compacted.
 
 ## Config file
 
 YAML. The settings of the backup (`paths`, `exclude`, `method`, retention, `encrypted`) and the state: `revision`,
-and per generation `name`, `index`, `tomes` (in archive order) and `versions`. The revision inside must equal the one
+and per full backup `name` (= its folder), `index`, `tomes` (in archive order) and `versions`. The revision inside must equal the one
 in the file name, otherwise the config is invalid (no renaming/replaying of old configs). The last line is the seal:
 
 ```
@@ -109,12 +114,12 @@ two configs (`L`, and `L-1` for cleanup).
 ## Backup
 
 1. `list config.`; failure aborts. Pick the latest config `C` (revision `L`; none means there is no backup).
-2. Run the archiver on the generation to extend (or a new one): it reads the old index named by `C` and streams the
+2. Run the archiver on the full backup to extend (or a new one): it reads the old index named by `C` and streams the
    new tome and the new index with `upload`, under new names for revision `L+1`. Each `upload` must exit 0. Any
    failure aborts the run: the junk stays and is ignored. A run that changes nothing writes nothing and commits
    nothing.
-3. Compose the config for revision `L+1` from `C` with the new files, drop generations beyond
-   `keep_full_backup_count` (they are simply no longer referenced), seal it and `upload`
+3. Compose the config for revision `L+1` from `C` with the new files, drop full backups beyond
+   `keep_full_backup_count` (they are simply no longer referenced; their files and folders go with the next cleanup), seal it and `upload`
    `config.<L+1>.<random>.yaml`. Before that, `list config.` again and refuse to commit if a well-formed config of
    revision `L+1` or later appeared. When this `upload` returns 0 the backup is committed.
 4. Cleanup (below). A failed cleanup does not fail the backup.
@@ -151,7 +156,7 @@ Rules:
 
 - Delete in this order: configs first, then indexes, then tomes, so a valid config never refers to a missing file.
 - Delete nothing if a file referenced by the config(s) at `L` or `L-1` is missing from the listing, or if anything
-  cannot be read.
+  cannot be read. The listing is the root, then every full backup folder in it (1 + N calls).
 - The last two revisions are always kept as a fallback (the config and the index of `L-1`), and a restore that is
   still running on `L-1` is unaffected.
 - Cleanup may run concurrently with backups and with other cleanups.

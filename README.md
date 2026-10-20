@@ -53,7 +53,7 @@ pointing at a file that holds it. There is deliberately no command line flag for
 | `create <url> [config]` | create a backup from a config (stdin if omitted or `-`) |
 | `config <url> [config]` | show the stored config; with a file replace it (versions are kept) |
 | `backup <url>` | add a new version of the configured `paths`; nothing is stored if nothing changed |
-| `list <url> [--files <version>]` | versions (`<generation>:<n>` and time, tab separated), or the files of one version |
+| `list <url> [--files <version>]` | versions (`<full backup>:<n>` and time, tab separated), or the files of one version |
 | `restore <url> [<version>] [--to <dir>] [--files <path>...]` | default version `latest`; in place, or under `dir` |
 | `verify <url> [<version>]` | read everything of a version, write nothing |
 | `delete <url> --yes` | remove the whole backup |
@@ -69,19 +69,20 @@ appears under `dir/<absolute path>`; with `--files /a/b/c --to dir` the match la
 `river init` prints it with comments. `paths`, `exclude`/`include_only` (zpaq patterns), `method` (zpaq `-method`, default `1`),
 `keep_incremental_backup_count`, `keep_full_backup_count`, `encrypted`.
 
-A backup is a chain of *generations*; a generation is a full backup plus up to `keep_incremental_backup_count`
-incremental versions. When it is full, the next backup starts a new generation (a full backup again). Beyond
-`keep_full_backup_count` generations the oldest is deleted whole (sequential archives cannot be repacked).
-Inside a generation unchanged data is stored once, so incremental versions are small.
+A backup is a series of *full backups*; a full backup is followed by up to `keep_incremental_backup_count`
+incremental versions. When it has that many, the next backup starts a new full backup. Beyond
+`keep_full_backup_count` full backups the oldest is deleted whole (sequential archives cannot be repacked).
+Inside a full backup unchanged data is stored once, so incremental versions are small. A version is named
+`<full backup>:<n>`, where the full backup is its creation time (`20261020T113453047`), also the name of its folder.
 
 ## What is stored
 
-Flat files at the backup root, nothing is ever overwritten:
+Nothing is ever overwritten. Configs are at the backup root, every full backup has a folder of its own:
 
 ```
-config.<revision>.<random>.yaml   config + state (generations, versions, the files they consist of); sealed
-arc<revision>.<random>.jpaq       one tome per backup run, named for the revision that wrote it
-idx<revision>.<random>.jpaq       the index of a generation, a new one per version
+config.<revision>.<random>.yaml                config + state (full backups, versions, the files they consist of); sealed
+<full backup>/arc<revision>.<random>.jpaq      one tome per backup run, named for the revision that wrote it
+<full backup>/idx<revision>.<random>.jpaq      the index of the full backup, a new one per version
 ```
 
 `revision` is a counter (5 digits) of committed changes (a backup run or a config change), `random` is 32 bits of hex.
@@ -94,7 +95,7 @@ verify (wrong key, tampering) is an error, never skipped. The config has no secr
 
 So the storage needs no atomic operations: a failed or killed run leaves unreferenced files and no config, and
 nothing committed is touched. After a commit river removes what the latest and the previous revision do not refer
-to and that is older than the latest revision (newer files may belong to a run that is still going): old generations,
+to and that is older than the latest revision (newer files may belong to a run that is still going): old full backups,
 old indexes, junk of failed runs. The previous revision is kept as a fallback. Details, and why this is safe, are in
 [docs/remote-protocol.md](docs/remote-protocol.md).
 
@@ -109,10 +110,10 @@ started twice on one machine (file lock in `~/.cache/river`, `river_lock_dir` to
 
 - `upload <file>`: the file arrives on **stdin**; exit 0 only if all of it was stored
 - `download <file>`: write the file to **stdout**
-- `delete <file>`: delete the file; a missing file is not an error
-- `list <prefix>`: the names of the files starting with prefix, one per line; no files is an empty output with exit 0
+- `delete <file>`: delete the file, and the folder if that left it empty; a missing file is not an error
+- `list <prefix>`: the entries (files and folders) of one level whose name starts with prefix, one per line (`name` or `folder/name`); a prefix with a folder part (`20261020T113453047/arc`) lists inside that folder; no entries is an empty output with exit 0. river does not care whether an entry is a file or a folder: it only looks at names it created itself
 
-File names are flat (no directories). A non-zero exit code is a failure, **including a listing or download that is
+File names are `name` or `folder/name` (one level). A non-zero exit code is a failure, **including a listing or download that is
 incomplete**; stderr goes to the user. Once `upload` has exited with 0, `download` and `list` must show the file (a
 partially visible file while it uploads, or after it failed, is fine). The url `ssh:me@host:/data` calls the scripts in
 `drivers/ssh` with `me@host:/data`. Included: `local` (a directory), `ssh` (`SSH_OPTS` for options), `s3` (aws cli;

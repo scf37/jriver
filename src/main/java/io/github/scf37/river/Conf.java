@@ -11,20 +11,20 @@ import org.yaml.snakeyaml.constructor.SafeConstructor;
 
 /**
  * Contents of a config file: the configuration (edited by the user) and the state (kept by river):
- * the revision, the generations with their files and versions.
+ * the revision, the full backups with their files and versions.
  */
 final class Conf {
-  /** Version {@code n} of a generation (the n-th version in its index). */
+  /** Version {@code n} of a full backup (the n-th version in its index). */
   record Version(int n, String time) {}
 
-  /** One chain of archive versions: a full backup followed by incremental ones. */
-  static final class Generation {
-    final String name;
+  /** A full backup and the incremental versions that follow it: one archive, in a folder of its own. */
+  static final class FullBackup {
+    final String name;  // also the folder
     String index;  // current index file at the backup root; null before the first commit
     final List<String> tomes = new ArrayList<>();  // tome files in archive order
     final List<Version> versions = new ArrayList<>();
 
-    Generation(String name) {
+    FullBackup(String name) {
       this.name = name;
     }
   }
@@ -37,7 +37,7 @@ final class Conf {
   int keepFullBackupCount = 3;
   boolean encrypted;
   int revision;
-  final List<Generation> generations = new ArrayList<>();
+  final List<FullBackup> fullBackups = new ArrayList<>();
 
   private static Yaml yaml() {
     DumperOptions o = new DumperOptions();
@@ -72,20 +72,20 @@ final class Conf {
     Conf c = new Conf();
     c.readConfig(m, "config");
     c.revision = integer(m.get("revision"), "revision");
-    Object gens = m.get("generations");
-    if (gens != null) {
-      for (Object g : list(gens, "generations")) {
-        Map<String, Object> gm = map(g, "generations[]");
-        Generation gen = new Generation(str(gm.get("name"), "generations[].name"));
+    Object fulls = m.get("full_backups");
+    if (fulls != null) {
+      for (Object g : list(fulls, "full_backups")) {
+        Map<String, Object> gm = map(g, "full_backups[]");
+        FullBackup gen = new FullBackup(Names.requireFolder(str(gm.get("name"), "full_backups[].name"), "full_backups[].name"));
         Object idx = gm.get("index");
-        gen.index = idx == null ? null : Names.require(str(idx, "generations[].index"), "generations[].index").name();
+        gen.index = idx == null ? null : Names.require(str(idx, "full_backups[].index"), gen.name, "full_backups[].index").name();
         for (Object t : list(gm.get("tomes"), "tomes"))
-          gen.tomes.add(Names.require(str(t, "generations[].tomes[]"), "generations[].tomes[]").name());
+          gen.tomes.add(Names.require(str(t, "full_backups[].tomes[]"), gen.name, "full_backups[].tomes[]").name());
         for (Object v : list(gm.get("versions"), "versions")) {
           Map<String, Object> vm = map(v, "versions[]");
           gen.versions.add(new Version(integer(vm.get("n"), "versions[].n"), str(vm.get("time"), "versions[].time")));
         }
-        c.generations.add(gen);
+        c.fullBackups.add(gen);
       }
     }
     return c;
@@ -124,7 +124,7 @@ final class Conf {
 
   Map<String, Object> stateMap() {
     List<Object> gens = new ArrayList<>();
-    for (Generation g : generations) {
+    for (FullBackup g : fullBackups) {
       Map<String, Object> gm = new LinkedHashMap<>();
       gm.put("name", g.name);
       gm.put("index", g.index);
@@ -141,7 +141,7 @@ final class Conf {
     }
     Map<String, Object> m = new LinkedHashMap<>();
     m.put("revision", revision);
-    m.put("generations", gens);
+    m.put("full_backups", gens);
     return m;
   }
 
@@ -167,16 +167,16 @@ final class Conf {
     c.keepFullBackupCount = cfg.keepFullBackupCount;
     c.encrypted = cfg.encrypted;
     c.revision = revision;
-    c.generations.addAll(generations);
+    c.fullBackups.addAll(fullBackups);
     return c;
   }
 
-  Generation lastGeneration() {
-    return generations.isEmpty() ? null : generations.get(generations.size() - 1);
+  FullBackup lastFullBackup() {
+    return fullBackups.isEmpty() ? null : fullBackups.get(fullBackups.size() - 1);
   }
 
-  Generation generation(String name) {
-    for (Generation g : generations) if (g.name.equals(name)) return g;
+  FullBackup fullBackup(String name) {
+    for (FullBackup g : fullBackups) if (g.name.equals(name)) return g;
     return null;
   }
 

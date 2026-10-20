@@ -8,7 +8,6 @@ import io.github.scf37.river.Fixture.Result;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
@@ -43,7 +42,7 @@ class FaultTest {
   }
 
   private List<String> names(String prefix) throws IOException {
-    return f.remoteNames().stream().filter(n -> n.startsWith(prefix)).toList();
+    return f.remoteNames().stream().filter(n -> n.substring(n.lastIndexOf('/') + 1).startsWith(prefix)).toList();
   }
 
   private String newestConfig() throws IOException {
@@ -54,7 +53,7 @@ class FaultTest {
   @Test
   void failedTomeUploadChangesNothingAndNextBackupWorks() throws IOException {
     f.write("2.file", "2");
-    f.failWhen("upload:arc*");
+    f.failWhen("upload:*/arc*");
     Result r = f.river("backup", url);
     assertNotEquals(0, r.rc(), r.toString());
     assertEquals(1, versions().size());
@@ -68,7 +67,7 @@ class FaultTest {
   @Test
   void failedIndexUploadChangesNothing() throws IOException {
     f.write("2.file", "2");
-    f.failWhen("upload:idx*");
+    f.failWhen("upload:*/idx*");
     assertNotEquals(0, f.river("backup", url).rc());
     assertEquals(1, versions().size());
     assertEquals(List.of("1.file"), restoredLatest());
@@ -144,7 +143,7 @@ class FaultTest {
 
   @Test
   void failedDownloadOfIndexFailsRestoreAndBackup() throws IOException {
-    f.failWhen("download:idx*");
+    f.failWhen("download:*/idx*");
     assertNotEquals(0, f.river("restore", url, "latest", "--to", tmp.resolve("x").toString()).rc());
     f.write("2.file", "2");
     assertNotEquals(0, f.river("backup", url).rc());
@@ -162,14 +161,12 @@ class FaultTest {
     for (String how : List.of("download", "vanished")) {
       Path idx = f.remote.resolve(names("idx").get(names("idx").size() - 1));  // the current one
       Path saved = tmp.resolve("idx.saved");
-      if (how.equals("download")) f.failWhen("download:idx*");
+      if (how.equals("download")) f.failWhen("download:*/idx*");
       else Files.move(idx, saved);
       Result r = f.river("backup", url);
       f.failNever();
       if (how.equals("vanished")) Files.move(saved, idx);
       assertNotEquals(0, r.rc(), how + ": " + r);
-      List<String> after = new ArrayList<>(f.remoteNames());
-      after.removeIf(n -> !before.contains(n) && !n.startsWith("arc") && !n.startsWith("idx"));
       assertEquals(before, f.remoteNames().stream().filter(before::contains).toList(), how + ": nothing committed was touched");
       assertEquals(before.stream().filter(n -> n.startsWith("config.")).toList(), names("config.").stream()
           .filter(before::contains).toList(), how + ": configs untouched");
@@ -185,7 +182,7 @@ class FaultTest {
     String latest = newestConfig();
     Conf c = Conf.parse(new String(ConfigFile.wellFormed(Files.readAllBytes(f.remote.resolve(latest))).covered(),
         java.nio.charset.StandardCharsets.UTF_8));
-    c.generations.get(0).versions.remove(1);  // config forgot version 2, index still has it
+    c.fullBackups.get(0).versions.remove(1);  // config forgot version 2, index still has it
     c.revision++;
     Files.write(f.remote.resolve(Names.config(c.revision)), new ConfigFile(null).seal(c.dump()));
     List<String> tomes = names("arc");
@@ -205,7 +202,7 @@ class FaultTest {
     rival.revision = 3;
     Path staged = tmp.resolve("rival.yaml");
     Files.write(staged, new ConfigFile(null).seal(rival.dump()));
-    f.hookWhen("upload:idx*", "cp '" + staged + "' \"$R/config.00003.cafebabe.yaml\"");
+    f.hookWhen("upload:*/idx*", "cp '" + staged + "' \"$R/config.00003.cafebabe.yaml\"");
     Result r = f.river("backup", url);
     f.failNever();
     assertNotEquals(0, r.rc(), r.toString());

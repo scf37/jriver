@@ -87,17 +87,25 @@ final class Fixture {
     Files.deleteIfExists(root.resolve("hook-pattern"));
   }
 
-  /** Sorted names of the files at the backup root. */
+  /** Sorted relative names of all files of the backup (folders included, as dir/name). */
   List<String> remoteNames() throws IOException {
     if (!Files.exists(remote)) return List.of();
-    try (Stream<Path> s = Files.list(remote)) {
-      return s.map(p -> p.getFileName().toString()).sorted().toList();
+    try (Stream<Path> s = Files.walk(remote)) {
+      return s.filter(Files::isRegularFile).map(p -> remote.relativize(p).toString()).sorted().toList();
     }
   }
 
-  /** How many files at the backup root start with prefix. */
+  /** How many files of the backup have a name (without the folder) that starts with prefix. */
   long count(String prefix) throws IOException {
-    return remoteNames().stream().filter(n -> n.startsWith(prefix)).count();
+    return remoteNames().stream().filter(n -> n.substring(n.lastIndexOf('/') + 1).startsWith(prefix)).count();
+  }
+
+  /** Folders at the backup root. */
+  List<String> folders() throws IOException {
+    if (!Files.exists(remote)) return List.of();
+    try (Stream<Path> s = Files.list(remote)) {
+      return s.filter(Files::isDirectory).map(p -> p.getFileName().toString()).sorted().toList();
+    }
   }
 
   Result river(String... args) {

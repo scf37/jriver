@@ -99,16 +99,20 @@ class ConfigFileTest {
 
   @Test
   void names() {
+    String f = "20260101T123456789";
     assertEquals(3, Names.parse("config.00003.0a1b2c3d.yaml").revision());
     assertTrue(Names.parse("config.00003.0a1b2c3d.yaml").config());
-    assertEquals(12, Names.parse("arc00012.0a1b2c3d.jpaq").revision());
-    assertEquals(12, Names.parse("idx00012.ffffffff.jpaq").revision());
+    assertEquals(12, Names.parse(f + "/arc00012.0a1b2c3d.jpaq").revision());
+    assertEquals(f, Names.parse(f + "/arc00012.0a1b2c3d.jpaq").folder());
+    assertTrue(Names.parse(f + "/idx00012.ffffffff.jpaq").index());
     for (String bad : new String[] {"config.3.0a1b2c3d.yaml", "config.00003.0A1B2C3D.yaml", "config.00003.0a1b2c3.yaml",
-        "arc00012.0a1b2c3d.jpaq.tmp", "arc-000001.jpaq", "../arc00012.0a1b2c3d.jpaq", "x/arc00012.0a1b2c3d.jpaq",
-        "arc00012.0a1b2c3d.jpaq\n", "river.conf", "notes.txt", "config.99999999999.0a1b2c3d.yaml"})
+        f + "/arc00012.0a1b2c3d.jpaq.tmp", "arc-000001.jpaq", "arc00012.0a1b2c3d.jpaq", "../arc00012.0a1b2c3d.jpaq",
+        "x/arc00012.0a1b2c3d.jpaq", "g" + f + "/arc00012.0a1b2c3d.jpaq", f + "/x/arc00012.0a1b2c3d.jpaq",
+        f + "/arc00012.0a1b2c3d.jpaq\n", f + "//arc00012.0a1b2c3d.jpaq", f + "/config.00003.0a1b2c3d.yaml",
+        "river.conf", "notes.txt", "config.99999999999.0a1b2c3d.yaml"})
       assertNull(Names.parse(bad), bad);
     assertNotNull(Names.parse(Names.config(7)));
-    assertNotNull(Names.parse(Names.tome(7)));
-    assertNotNull(Names.parse(Names.index(7)));
+    assertNotNull(Names.parse(Names.tome(f, 7)));
+    assertNotNull(Names.parse(Names.index(f, 7)));
   }
 }

@@ -1,8 +1,9 @@
 #!/bin/sh
-# delete <dir> <file>: a missing file is fine
+# delete <dir> <file>: a missing file is fine; a folder left empty is removed
 set -eu
 [ $# = 2 ] || { echo "usage: delete <dir> <file>" >&2; exit 2; }
 case "$2" in
-  ""|"."|".."|*/*) echo "refusing to delete '$2'" >&2; exit 2 ;;
+  ""|"."|".."|/*|../*|*/..|*/../*|*//*) echo "refusing to delete '$2'" >&2; exit 2 ;;
 esac
 rm -f "$1/$2"
+case "$2" in */*) rmdir "$1/${2%/*}" 2>/dev/null || true ;; esac

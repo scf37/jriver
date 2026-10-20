@@ -27,7 +27,7 @@ public final class Main {
         delete <url> --yes                   delete the whole backup, irreversibly
         help                                 this text
 
-      A version is <generation>:<n> as shown by list, or 'latest'.
+      A version is <full backup>:<n> as shown by list, or 'latest'.
       Encrypted backups need the key in the river_key environment variable
       (or river_key_file: path of a file with the key).
       -v shows what the archiver does; otherwise river only speaks on problems.

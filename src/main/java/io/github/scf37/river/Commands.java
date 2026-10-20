@@ -23,7 +23,7 @@ import java.util.function.Function;
 
 /** The river commands. Every method returns the exit code: 0 ok, 1 ok with warnings. */
 final class Commands {
-  private static final DateTimeFormatter GEN_NAME =
+  private static final DateTimeFormatter FULL_NAME =
       DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmssSSS").withZone(ZoneOffset.UTC);
 
   private final Path home;
@@ -203,7 +203,7 @@ final class Commands {
     try (LocalLock ll = LocalLock.acquire(lockDir(), url)) {
       Remote.Snapshot snap = remote.latest();
       Conf cur = snap.conf();
-      if (cur.encrypted != cfg.encrypted && !cur.generations.isEmpty())
+      if (cur.encrypted != cfg.encrypted && !cur.fullBackups.isEmpty())
         throw new RiverException("cannot change 'encrypted' of a backup that already has versions");
       Conf next = cur.withConfigFrom(cfg);
       next.revision = snap.revision() + 1;
@@ -225,10 +225,10 @@ final class Commands {
       if (conf.paths.isEmpty()) throw new RiverException("no paths to back up in config");
       int revision = snap.revision() + 1;
 
-      // keep_incremental_backup_count incrementals follow the first, full, version of a generation
-      Conf.Generation last = conf.lastGeneration();
+      // keep_incremental_backup_count incrementals follow the first version of a full backup
+      Conf.FullBackup last = conf.lastFullBackup();
       boolean fresh = last == null || last.versions.size() > conf.keepIncrementalBackupCount;
-      Conf.Generation gen = fresh ? new Conf.Generation("g" + GEN_NAME.format(Instant.now())) : last;
+      Conf.FullBackup gen = fresh ? new Conf.FullBackup(FULL_NAME.format(Instant.now())) : last;
 
       DriverStorage storage = new DriverStorage(driver, gen, revision);
       ZpaqArchive.AddResult added = zpaq(storage, DriverStorage.ARCHIVE, conf, e -> {
@@ -256,9 +256,9 @@ final class Commands {
       gen.index = index;
       gen.tomes.add(tome);
       gen.versions.add(new Conf.Version(gen.versions.size() + 1, now()));
-      if (fresh) conf.generations.add(gen);
-      // beyond keep_full_backup_count the oldest generation is simply not referenced any more; cleanup removes it
-      while (conf.generations.size() > conf.keepFullBackupCount) conf.generations.remove(0);
+      if (fresh) conf.fullBackups.add(gen);
+      // beyond keep_full_backup_count the oldest full backup is simply not referenced any more; cleanup removes it
+      while (conf.fullBackups.size() > conf.keepFullBackupCount) conf.fullBackups.remove(0);
       conf.revision = revision;
       remote.commit(conf);
       remote.cleanup(revision, err::println);
@@ -293,7 +293,7 @@ final class Commands {
     return readLatest(url, snap -> {
       Conf conf = snap.conf();
       if (filesVersion == null) {
-        for (Conf.Generation g : conf.generations)
+        for (Conf.FullBackup g : conf.fullBackups)
           for (Conf.Version v : g.versions) out.println(g.name + ":" + v.n() + "\t" + v.time());
         return 0;
       }
@@ -360,21 +360,21 @@ final class Commands {
 
   // ---------------------------------------------------------------- versions
 
-  record Selected(Conf.Generation gen, Conf.Version version) {}
+  record Selected(Conf.FullBackup gen, Conf.Version version) {}
 
-  /** {@code <generation>:<n>} or {@code latest} (or empty). */
+  /** {@code <full backup>:<n>} or {@code latest} (or empty). */
   static Selected select(Conf conf, String v) {
     if (v == null || v.isEmpty() || v.equals("latest")) {
-      for (int i = conf.generations.size() - 1; i >= 0; i--) {
-        Conf.Generation g = conf.generations.get(i);
+      for (int i = conf.fullBackups.size() - 1; i >= 0; i--) {
+        Conf.FullBackup g = conf.fullBackups.get(i);
         if (!g.versions.isEmpty()) return new Selected(g, g.versions.get(g.versions.size() - 1));
       }
       throw new RiverException("backup has no versions yet");
     }
     int i = v.lastIndexOf(':');
-    if (i <= 0) throw new RiverException("incorrect version '" + v + "', expected <generation>:<n> or latest");
-    Conf.Generation g = conf.generation(v.substring(0, i));
-    if (g == null) throw new RiverException("no such generation: " + v.substring(0, i) + " (see river list)");
+    if (i <= 0) throw new RiverException("incorrect version '" + v + "', expected <full backup>:<n> or latest");
+    Conf.FullBackup g = conf.fullBackup(v.substring(0, i));
+    if (g == null) throw new RiverException("no such full backup: " + v.substring(0, i) + " (see river list)");
     int n;
     try {
       n = Integer.parseInt(v.substring(i + 1));

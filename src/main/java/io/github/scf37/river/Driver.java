@@ -17,10 +17,11 @@ import java.util.List;
  *   <li>{@code upload <file>}: reads the file from stdin; exit code 0 only if all of it was stored
  *   <li>{@code download <file>}: writes the file to stdout
  *   <li>{@code delete <file>}: deletes the file; a missing file is no error
- *   <li>{@code list <prefix>}: names of the files starting with prefix, one per line
+ *   <li>{@code list <prefix>}: the entries (files and folders) starting with prefix, one per line, as
+ *       {@code name} or {@code folder/name}; a prefix with a folder part lists inside that folder
  * </ul>
  *
- * Files are flat names without directories. A non-zero exit code is a failure; stderr is passed through to the user.
+ * Names are {@code name} or {@code folder/name}, one level. A non-zero exit code is a failure; stderr is passed through to the user.
  */
 final class Driver {
   private final Path dir;
@@ -72,7 +73,7 @@ final class Driver {
     return b;
   }
 
-  /** File names starting with prefix. A failed listing is an error, an empty one is not. */
+  /** Entries starting with prefix (one level; folders may carry a trailing slash). A failed listing is an error, an empty one is not. */
   List<String> list(String prefix) throws IOException {
     Process p = start("list", prefix, false);
     byte[] b;

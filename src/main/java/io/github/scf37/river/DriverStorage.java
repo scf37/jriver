@@ -11,13 +11,13 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * jpaq {@link Storage} for one generation on top of a {@link Driver}: everything is streamed through the driver
+ * jpaq {@link Storage} for one full backup on top of a {@link Driver}: everything is streamed through the driver
  * scripts. jpaq works with logical names, the files at the backup root have names that carry the revision and a
- * random part (see {@link Names}); the config of a generation says which is which:
+ * random part (see {@link Names}); the config of a full backup says which is which:
  *
  * <ul>
- *   <li>{@code arc-00000k.jpaq} is the k-th of {@link Conf.Generation#tomes}
- *   <li>{@link #INDEX} is {@link Conf.Generation#index}
+ *   <li>{@code arc-00000k.jpaq} is the k-th of {@link Conf.FullBackup#tomes}
+ *   <li>{@link #INDEX} is {@link Conf.FullBackup#index}
  *   <li>a tome written by this run gets a new name for the revision being committed, so does {@link #INDEX_OUT}
  * </ul>
  *
@@ -34,20 +34,20 @@ final class DriverStorage implements Storage {
   private static final Pattern TOME = Pattern.compile("arc-(\\d{6})\\.jpaq");
 
   private final Driver driver;
-  private final Conf.Generation gen;
+  private final Conf.FullBackup gen;
   private final int revision;
   private final Map<String, String> written = new HashMap<>();  // logical -> physical name of what this run wrote
   private volatile String poisoned;
 
-  /** Storage for generation gen; new files are named for revision. */
-  DriverStorage(Driver driver, Conf.Generation gen, int revision) {
+  /** Storage for the full backup gen; new files are named for revision. */
+  DriverStorage(Driver driver, Conf.FullBackup gen, int revision) {
     this.driver = driver;
     this.gen = gen;
     this.revision = revision;
   }
 
   /** Storage that only reads. */
-  DriverStorage(Driver driver, Conf.Generation gen) {
+  DriverStorage(Driver driver, Conf.FullBackup gen) {
     this(driver, gen, 0);
   }
 
@@ -78,7 +78,7 @@ final class DriverStorage implements Storage {
 
   private String readName(String logical) throws IOException {
     if (logical.equals(INDEX)) {
-      if (gen.index == null) throw new IOException("the generation has no index");
+      if (gen.index == null) throw new IOException("the full backup has no index");
       return gen.index;
     }
     Matcher m = TOME.matcher(logical);
@@ -148,10 +148,10 @@ final class DriverStorage implements Storage {
     if (m.matches()) {
       // the tome number comes from the index; it must continue the tomes of the config
       if (Integer.parseInt(m.group(1)) != gen.tomes.size() + 1 || newTome() != null)
-        throw new IOException("refusing to write " + logical + ": the generation has " + gen.tomes.size() + " tomes");
-      name = Names.tome(revision);
+        throw new IOException("refusing to write " + logical + ": the full backup has " + gen.tomes.size() + " tomes");
+      name = Names.tome(gen.name, revision);
     } else if (logical.equals(INDEX_OUT)) {
-      name = Names.index(revision);
+      name = Names.index(gen.name, revision);
     } else {
       throw new IOException("refusing to write " + logical);
     }

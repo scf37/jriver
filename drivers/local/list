@@ -1,7 +1,9 @@
 #!/bin/sh
-# list <dir> <prefix>: names of the files in <dir> starting with prefix, one per line (a missing dir is empty)
+# list <dir> <prefix>: the entries (files and folders) of one level starting with prefix, one per line, as name or
+# folder/name. A prefix with a folder part ("f/arc") lists inside that folder. A missing dir is empty.
 set -eu
 [ $# = 2 ] || { echo "usage: list <dir> <prefix>" >&2; exit 2; }
-[ -d "$1" ] || exit 0
-out=$(ls -1 "$1")
-printf '%s\n' "$out" | awk -v p="$2" 'length($0) > 0 && index($0, p) == 1'
+sub=${2%"${2##*/}"}
+[ -d "$1/$sub" ] || exit 0
+out=$(ls -1 "$1/$sub")
+printf '%s\n' "$out" | awk -v d="$sub" -v p="$2" 'length($0) > 0 { n = d $0; if (index(n, p) == 1) print n }'

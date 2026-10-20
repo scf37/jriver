@@ -1,13 +1,15 @@
 #!/bin/sh
-# list <remote:path> <prefix>: names of the files starting with prefix, one per line (needs rclone).
+# list <remote:path> <prefix>: the entries (files and folders) of one level starting with prefix, one per line, as
+# name or folder/name (needs rclone). A prefix with a folder part ("f/arc") lists inside that folder.
 # A missing directory is an empty listing.
 set -eu
 [ $# = 2 ] || { echo "usage: list <remote:path> <prefix>" >&2; exit 2; }
+sub=${2%"${2##*/}"}
 rc=0
-out=$(rclone lsf --files-only "$1") || rc=$?
+out=$(rclone lsf "$1/$sub") || rc=$?
 if [ "$rc" != 0 ]; then
   # rclone exits with 3 if the directory is not found
   [ "$rc" = 3 ] && exit 0
   exit "$rc"
 fi
-printf '%s\n' "$out" | awk -v p="$2" 'length($0) > 0 && index($0, p) == 1'
+printf '%s\n' "$out" | awk -v d="$sub" -v p="$2" 'length($0) > 0 { n = d $0; if (index(n, p) == 1) print n }'

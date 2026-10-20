@@ -21,10 +21,10 @@ include_only: []
 method: 1
 
 # How many incremental versions to add to a full backup before starting a new full backup.
-# One full backup (generation) then holds this many + 1 versions.
+# One full backup then holds this many + 1 versions.
 keep_incremental_backup_count: 30
 
-# How many full backups (generations) to keep; the oldest is deleted when a new one is started
+# How many full backups to keep; the oldest is deleted when a new one is started
 keep_full_backup_count: 3
 
 # Encrypt (AES) names and data. The key is passed via the river_key environment variable

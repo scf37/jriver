@@ -1,8 +1,8 @@
 #!/bin/sh
-# delete <s3://bucket/prefix> <file>: a missing object is fine
+# delete <s3://bucket/prefix> <file>: a missing object is fine (folders are only part of the key)
 set -eu
 [ $# = 2 ] || { echo "usage: delete <s3://bucket/prefix> <file>" >&2; exit 2; }
 case "$2" in
-  ""|"."|".."|*/*) echo "refusing to delete '$2'" >&2; exit 2 ;;
+  ""|"."|".."|/*|../*|*/..|*/../*|*//*) echo "refusing to delete '$2'" >&2; exit 2 ;;
 esac
 exec aws s3 rm --only-show-errors "$1/$2"

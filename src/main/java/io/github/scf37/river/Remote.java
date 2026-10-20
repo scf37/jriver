@@ -14,7 +14,7 @@ import java.util.function.Consumer;
 /**
  * The backup root: config files that commit revisions, and the tomes and indexes they refer to.
  *
- * <p>Storage needs no atomic operations. A revision is committed by writing a sealed config
+ * <p>Tomes and indexes are in a folder per full backup. Storage needs no atomic operations. A revision is committed by writing a sealed config
  * {@code config.<revision>.<random>.yaml} after everything it refers to was stored completely. See
  * docs/remote-protocol.md.
  */
@@ -46,6 +46,28 @@ final class Remote {
     for (String s : driver.list(prefix)) {
       Names.Name n = Names.parse(s);
       if (n != null && s.startsWith(prefix)) r.add(n);
+    }
+    return r;
+  }
+
+  /**
+   * Every file of the backup: the configs at the root, and the tomes and indexes in the folders of the full backups.
+   * A listing returns the entries of one level; what is a folder is told by its name alone, nothing else is looked at.
+   */
+  private List<Names.Name> allNames() throws IOException {
+    List<Names.Name> r = new ArrayList<>();
+    for (String entry : driver.list("")) {
+      Names.Name n = Names.parse(entry);
+      if (n != null) {
+        r.add(n);
+        continue;
+      }
+      String folder = Names.folder(entry);
+      if (folder == null) continue;
+      for (String inside : driver.list(folder + "/")) {
+        Names.Name d = Names.parse(inside);
+        if (d != null && folder.equals(d.folder())) r.add(d);
+      }
     }
     return r;
   }
@@ -144,7 +166,7 @@ final class Remote {
 
   /** Names a config refers to. */
   private static void referenced(Conf c, Set<String> into) {
-    for (Conf.Generation g : c.generations) {
+    for (Conf.FullBackup g : c.fullBackups) {
       if (g.index != null) into.add(g.index);
       into.addAll(g.tomes);
     }
@@ -171,9 +193,7 @@ final class Remote {
           referenced(s.conf(), keep);
         }
       }
-      List<Names.Name> all = new ArrayList<>(names(Names.CONFIG_PREFIX));
-      all.addAll(names(Names.INDEX_PREFIX));
-      all.addAll(names(Names.TOME_PREFIX));
+      List<Names.Name> all = allNames();
       Set<String> present = new HashSet<>();
       for (Names.Name n : all) present.add(n.name());
       for (String f : keep) {
@@ -199,14 +219,16 @@ final class Remote {
   }
 
   private static int order(Names.Name n) {
-    return n.config() ? 0 : n.name().startsWith(Names.INDEX_PREFIX) ? 1 : 2;
+    return n.config() ? 0 : n.index() ? 1 : 2;
   }
 
   /** Every file of the backup, configs last. */
   void deleteAll(Consumer<String> progress) throws IOException {
-    List<Names.Name> data = new ArrayList<>(names(Names.INDEX_PREFIX));
-    data.addAll(names(Names.TOME_PREFIX));
-    List<Names.Name> configs = names(Names.CONFIG_PREFIX);
+    List<Names.Name> data = allNames();
+    List<Names.Name> configs = new ArrayList<>();
+    for (Names.Name n : data) if (n.config()) configs.add(n);
+    data.removeIf(Names.Name::config);
+    data.sort((a, b) -> Integer.compare(order(a), order(b)));
     configs.sort((a, b) -> Integer.compare(a.revision(), b.revision()));  // the newest stays the longest
     for (Names.Name n : data) driver.delete(n.name());
     for (Names.Name n : configs) {
